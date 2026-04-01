@@ -1,0 +1,2 @@
+[console_scripts]
+drissionpage-cli = drissionpage_cli:main

@@ -1,3 +1,29 @@
+Metadata-Version: 2.4
+Name: drissionpage-cli
+Version: 0.1.0
+Summary: DrissionPage CLI - Token-efficient browser automation for coding agents
+Author: DrissionPage-MCP Contributors
+License: Apache-2.0
+Project-URL: Homepage, https://github.com/nicekate/DrissionPage-MCP
+Project-URL: Repository, https://github.com/nicekate/DrissionPage-MCP
+Keywords: browser,automation,cli,drissionpage,web,scraping
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Software Development :: Testing
+Classifier: Topic :: Internet :: WWW/HTTP :: Browsers
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: DrissionPage>=4.0.0
+Dynamic: license-file
+
 # DrissionPage-cli
 
 Token-efficient browser automation CLI for coding agents, powered by [DrissionPage](https://DrissionPage.cn).
