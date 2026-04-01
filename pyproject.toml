@@ -37,8 +37,8 @@ drissionpage-cli = "drissionpage_cli:main"
 Homepage = "https://github.com/nicekate/DrissionPage-MCP"
 Repository = "https://github.com/nicekate/DrissionPage-MCP"
 
-[tool.setuptools]
-py-modules = ["drissionpage_cli"]
+[tool.setuptools.packages.find]
+include = ["drissionpage_cli*"]
 
 [tool.setuptools.package-data]
-"*" = ["skills/**/*"]
+drissionpage_cli = ["skills/**/*"]

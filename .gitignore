@@ -2,3 +2,10 @@
 .pytest_cache/*
 __pycache__/*
 *.pyc
+*.tar.gz
+*.egg-info
+dist/*
+build/*
+*.egg
+*.log
+*.whl
