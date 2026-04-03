@@ -1,8 +1,12 @@
 # DrissionPage-cli
-
 Token-efficient browser automation CLI for coding agents, powered by [DrissionPage](https://DrissionPage.cn).
 
 Mirrors the architecture of [playwright-cli](https://github.com/microsoft/playwright-cli) but uses DrissionPage as the backend — pure Python, no Node.js required.
+
+## Why use drissionpage-cli
+
+If you know, you know. If you don't, go use playwright-cli.
+
 
 ## Why CLI + Skills over MCP
 

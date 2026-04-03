@@ -1,6 +1,7 @@
 .drissionpage-cli/*
 .pytest_cache/*
 __pycache__/*
+*.egg-info/*
 *.pyc
 *.tar.gz
 *.egg-info

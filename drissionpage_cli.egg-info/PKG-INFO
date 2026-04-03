@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: drissionpage-cli
-Version: 0.1.0
+Version: 0.1.1
 Summary: DrissionPage CLI - Token-efficient browser automation for coding agents
 Author: DrissionPage-MCP Contributors
 License: Apache-2.0
@@ -41,18 +41,18 @@ Modern coding agents (Claude Code, GitHub Copilot, etc.) increasingly favour CLI
 
 ## Installation
 
+### From PyPI (recommended)
+
+```bash
+pip install drissionpage-cli
+```
+
 ### From source (development)
 
 ```bash
 git clone https://github.com/nicekate/DrissionPage-MCP.git
 cd DrissionPage-MCP/DrissionPage-cli
 pip install -e .
-```
-
-### Dependencies only
-
-```bash
-pip install DrissionPage>=4.0.0
 ```
 
 After installation the `drissionpage-cli` command is available globally:
@@ -69,6 +69,29 @@ drissionpage-cli install --skills
 ```
 
 This copies the SKILL.md and reference guides into `.claude/skills/drissionpage-cli/` so that Claude Code (or any compatible agent) can discover them automatically.
+
+**One-liner** — install the package and set up Claude Code skills in a single command:
+
+```bash
+pip install drissionpage-cli && drissionpage-cli install --skills
+```
+
+#### What gets installed
+
+The `install --skills` command copies the following into `.claude/skills/drissionpage-cli/`:
+
+| File | Purpose |
+|------|---------|
+| `SKILL.md` | Skill definition & quick-start guide for the agent |
+| `references/element-locators.md` | CSS, XPath, text, and attribute locator syntax |
+| `references/running-code.md` | Custom DrissionPage Python code execution |
+| `references/session-management.md` | Multiple concurrent browser sessions |
+| `references/storage-state.md` | Cookies, localStorage, sessionStorage management |
+| `references/screenshots-pdf.md` | Visual capture and PDF generation |
+| `references/network-listening.md` | Network request monitoring |
+| `references/dual-mode.md` | Browser + HTTP request mode switching |
+
+Once installed, Claude Code automatically discovers the skill and can use `drissionpage-cli` commands for browser automation tasks.
 
 ## Quick Start
 
@@ -276,28 +299,29 @@ python3 -m pytest tests/ -v
 
 ```
 DrissionPage-cli/
-  drissionpage_cli.py              # Main CLI (40+ commands)
-  pyproject.toml                   # Python packaging
-  requirements.txt                 # DrissionPage>=4.0.0
-  pytest.ini                       # Test configuration
+  drissionpage_cli/                  # Main package
+    __init__.py                      # CLI entry point (59 commands)
+    skills/drissionpage-cli/         # Bundled skill files
+      SKILL.md
+      references/
+        element-locators.md
+        running-code.md
+        session-management.md
+        storage-state.md
+        screenshots-pdf.md
+        network-listening.md
+        dual-mode.md
+  pyproject.toml                     # Python packaging
+  requirements.txt                   # DrissionPage>=4.0.0
+  pytest.ini                         # Test configuration
   README.md
   LICENSE
   scripts/
-    update.py                      # Skill update script
-  skills/drissionpage-cli/
-    SKILL.md                       # Agent skill definition
-    references/
-      element-locators.md          # CSS, XPath, text, attribute locators
-      running-code.md              # run-code for custom automation
-      session-management.md        # Multiple browser sessions
-      storage-state.md             # Cookies, localStorage, sessionStorage
-      screenshots-pdf.md           # Visual capture
-      network-listening.md         # Network monitoring
-      dual-mode.md                 # Browser + HTTP requests mode
+    update.py                        # Skill update script
   tests/
-    conftest.py                    # Shared fixtures
-    test_unit.py                   # 92 unit tests (mocked, no browser)
-    test_integration.py            # 30+ integration tests (real browser)
+    conftest.py                      # Shared fixtures
+    test_unit.py                     # 92 unit tests (mocked, no browser)
+    test_integration.py              # 30+ integration tests (real browser)
 ```
 
 ## Environment Variables
