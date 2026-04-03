@@ -15,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Session storage directory
 CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", ".drissionpage-cli"))
@@ -182,6 +182,32 @@ def _find_element(page, ref):
 # Command handlers
 # ---------------------------------------------------------------------------
 
+_CONSOLE_CAPTURE_JS = """
+if (!window.__dp_console_capture_installed) {
+    window.__dp_console_logs = window.__dp_console_logs || [];
+    ['log', 'info', 'warn', 'error', 'debug'].forEach(function(t) {
+        var orig = console[t];
+        console[t] = function() {
+            var text = Array.prototype.slice.call(arguments).map(function(a) {
+                try { return (typeof a === 'object') ? JSON.stringify(a) : String(a); }
+                catch(e) { return String(a); }
+            }).join(' ');
+            window.__dp_console_logs.push({type: t === 'warn' ? 'warning' : t, text: text});
+            orig.apply(console, arguments);
+        };
+    });
+    window.__dp_console_capture_installed = true;
+}
+"""
+
+
+def _inject_console_capture(page):
+    """Inject console capture script into the page if not already installed."""
+    try:
+        page.run_js(_CONSOLE_CAPTURE_JS)
+    except Exception:
+        pass
+
 
 def cmd_open(args):
     """Open a browser, optionally navigate to a URL."""
@@ -197,6 +223,7 @@ def cmd_open(args):
     if url:
         page.get(url)
 
+    _inject_console_capture(page)
     print(_format_snapshot(page))
 
 
@@ -205,6 +232,7 @@ def cmd_goto(args):
     session = _get_session_name(args)
     page = _get_page(session)
     page.get(args.url)
+    _inject_console_capture(page)
     print(_format_snapshot(page))
 
 
@@ -448,7 +476,13 @@ def cmd_pdf(args):
         ensure_cli_dir()
         filename = str(CLI_DIR / f"page-{timestamp}.pdf")
 
-    page.save(path=filename, as_pdf=True)
+    # Use CDP directly to avoid DrissionPage bug: open(..., 'wb', newline='\n')
+    # is invalid since binary mode doesn't accept a newline argument.
+    from base64 import b64decode
+    r = page._run_cdp('Page.printToPDF', transferMode='ReturnAsBase64', printBackground=True)
+    pdf_bytes = b64decode(r['data'])
+    with open(filename, 'wb') as f:
+        f.write(pdf_bytes)
     print(f"PDF saved to {filename}")
 
 
@@ -529,7 +563,7 @@ def cmd_mousemove(args):
     """Move mouse to coordinates."""
     session = _get_session_name(args)
     page = _get_page(session)
-    page.actions.move_to(args.x, args.y)
+    page.actions.move_to((args.x, args.y))
     print("Mouse moved to", args.x, args.y)
 
 
@@ -651,7 +685,7 @@ def cmd_cookie_list(args):
     """List cookies."""
     session = _get_session_name(args)
     page = _get_page(session)
-    cookies = page.cookies(as_dict=False, all_info=True)
+    cookies = page.cookies(all_info=True)
     domain = getattr(args, "domain", None)
     if domain:
         cookies = [c for c in cookies if domain in c.get("domain", "")]
@@ -663,7 +697,7 @@ def cmd_cookie_get(args):
     """Get a cookie by name."""
     session = _get_session_name(args)
     page = _get_page(session)
-    cookies = page.cookies(as_dict=False, all_info=True)
+    cookies = page.cookies(all_info=True)
     for c in cookies:
         if c.get("name") == args.name:
             print(json.dumps(c, indent=2, ensure_ascii=False))
@@ -813,6 +847,8 @@ def cmd_console(args):
     """List console messages."""
     session = _get_session_name(args)
     page = _get_page(session)
+    # Ensure the interceptor is installed (no-op if already installed)
+    _inject_console_capture(page)
     result = page.run_js("""
         return JSON.stringify(
             (window.__dp_console_logs || []).map(e => ({
@@ -820,17 +856,17 @@ def cmd_console(args):
             }))
         )
     """)
-    if result:
-        logs = json.loads(result)
-        min_level = getattr(args, "level", None)
-        levels = ["error", "warning", "info", "debug"]
-        if min_level and min_level in levels:
-            allowed = set(levels[: levels.index(min_level) + 1])
-            logs = [l for l in logs if l.get("type", "info") in allowed]
+    logs = json.loads(result) if result else []
+    min_level = getattr(args, "level", None)
+    levels = ["error", "warning", "info", "debug"]
+    if min_level and min_level in levels:
+        allowed = set(levels[: levels.index(min_level) + 1])
+        logs = [l for l in logs if l.get("type", "info") in allowed]
+    if logs:
         for log in logs:
             print(f"[{log.get('type', 'info')}] {log.get('text', '')}")
     else:
-        print("No console messages captured. Use run-code to inject console capture first.")
+        print("No console messages captured yet. Console interceptor is now active — any future console.log/warn/error calls will be recorded.")
 
 
 def cmd_network(args):
@@ -961,7 +997,7 @@ def cmd_state_save(args):
         ensure_cli_dir()
         filename = str(CLI_DIR / f"state-{timestamp}.json")
 
-    cookies = page.cookies(as_dict=False, all_info=True)
+    cookies = page.cookies(all_info=True)
     local_storage = page.run_js(
         "return JSON.stringify(Object.entries(localStorage))"
     )
