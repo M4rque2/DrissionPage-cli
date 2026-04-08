@@ -15,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Session storage directory
 CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", ".drissionpage-cli"))
@@ -111,7 +111,9 @@ def _get_page(session_name, create=False, options=None):
 
     use_system_user_path = options and options.get("system_user_path")
     if use_system_user_path:
-        # use_system_user_path is incompatible with auto_port (auto_port creates a temp profile)
+        # auto_port picks a free port; use_system_user_path then causes DrissionPage
+        # to strip the --user-data-dir arg at launch, so Chrome uses the system profile.
+        co.auto_port()
         co.use_system_user_path(True)
     else:
         co.auto_port()  # pick a free port to avoid conflicts with stale browsers

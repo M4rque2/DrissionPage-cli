@@ -26,7 +26,7 @@ import drissionpage_cli as cli
 
 class TestVersionAndHelp:
     def test_version_string(self):
-        assert cli.__version__ == "0.1.0"
+        assert cli.__version__ == "0.1.2"
 
     def test_build_parser(self):
         parser = cli.build_parser()
@@ -619,11 +619,11 @@ class TestGetPageOptions:
         self._run_get_page({"system_user_path": True}, tmp_path, mock_co, mock_page)
         mock_co.use_system_user_path.assert_called_once_with(True)
 
-    def test_system_user_path_skips_auto_port(self, tmp_path):
+    def test_system_user_path_also_calls_auto_port(self, tmp_path):
         mock_co = self._make_mock_co()
         mock_page = MagicMock()
         self._run_get_page({"system_user_path": True}, tmp_path, mock_co, mock_page)
-        mock_co.auto_port.assert_not_called()
+        mock_co.auto_port.assert_called_once()
 
     def test_no_system_user_path_calls_auto_port(self, tmp_path):
         mock_co = self._make_mock_co()

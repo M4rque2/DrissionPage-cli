@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: drissionpage-cli
-Version: 0.1.1
+Version: 0.1.2
 Summary: DrissionPage CLI - Token-efficient browser automation for coding agents
 Author: DrissionPage-MCP Contributors
 License: Apache-2.0
@@ -25,10 +25,14 @@ Requires-Dist: DrissionPage>=4.0.0
 Dynamic: license-file
 
 # DrissionPage-cli
-
 Token-efficient browser automation CLI for coding agents, powered by [DrissionPage](https://DrissionPage.cn).
 
 Mirrors the architecture of [playwright-cli](https://github.com/microsoft/playwright-cli) but uses DrissionPage as the backend — pure Python, no Node.js required.
+
+## Why use drissionpage-cli
+
+If you know, you know. If you don't, go use playwright-cli.
+
 
 ## Why CLI + Skills over MCP
 

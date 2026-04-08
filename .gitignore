@@ -10,3 +10,4 @@ build/*
 *.egg
 *.log
 *.whl
+scripts/*
