@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-CLI_PATH = Path(__file__).resolve().parent.parent / "drissionpage_cli.py"
+CLI_ROOT = Path(__file__).resolve().parent.parent
 
 # Skip all integration tests if no browser or explicitly skipped
 SKIP_INTEGRATION = os.environ.get("SKIP_INTEGRATION", "0") == "1"
@@ -33,10 +33,11 @@ pytestmark = pytest.mark.skipif(
 def run_cli(*args, timeout=60, cwd=None, env_extra=None):
     """Run drissionpage-cli and return (returncode, stdout, stderr)."""
     env = os.environ.copy()
+    env["PYTHONPATH"] = str(CLI_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     if env_extra:
         env.update(env_extra)
 
-    cmd = [sys.executable, str(CLI_PATH)] + list(args)
+    cmd = [sys.executable, "-m", "drissionpage_cli"] + list(args)
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout, env=env, cwd=cwd
     )
@@ -51,6 +52,15 @@ def isolated_env(tmp_path):
         "DRISSIONPAGE_CLI_DIR": cli_dir,
         "DRISSIONPAGE_CLI_SESSION": f"test-{int(time.time())}",
     }
+
+
+@pytest.fixture
+def storage_url(tmp_path):
+    """A file:// URL that supports localStorage and sessionStorage.
+    data: URLs are null-origin in Chrome and block storage access."""
+    html_file = tmp_path / "storage_test.html"
+    html_file.write_text("<p>Storage Test</p>")
+    return html_file.as_uri()
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +83,7 @@ class TestIntegrationBasic:
     def test_version(self):
         rc, stdout, stderr = run_cli("--version")
         assert rc == 0
-        assert "0.1.0" in stdout
+        assert "0.1.4" in stdout
 
     def test_help(self):
         rc, stdout, stderr = run_cli("--help")
@@ -215,10 +225,10 @@ class TestIntegrationBrowser:
         rc, stdout, stderr = run_cli("reload", env_extra=isolated_env)
         assert rc == 0
 
-    def test_localstorage_operations(self, isolated_env):
+    def test_localstorage_operations(self, isolated_env, storage_url):
         """Test localStorage set, get, list, delete, clear."""
-        html = "data:text/html,<p>Storage Test</p>"
-        run_cli("open", html, env_extra=isolated_env)
+        # data: URLs are null-origin and block localStorage; use file:// instead.
+        run_cli("open", storage_url, env_extra=isolated_env)
 
         # Set
         rc, stdout, _ = run_cli(
@@ -250,10 +260,10 @@ class TestIntegrationBrowser:
         rc, stdout, _ = run_cli("localstorage-clear", env_extra=isolated_env)
         assert rc == 0
 
-    def test_sessionstorage_operations(self, isolated_env):
+    def test_sessionstorage_operations(self, isolated_env, storage_url):
         """Test sessionStorage set, get, clear."""
-        html = "data:text/html,<p>Session Storage</p>"
-        run_cli("open", html, env_extra=isolated_env)
+        # data: URLs are null-origin and block sessionStorage; use file:// instead.
+        run_cli("open", storage_url, env_extra=isolated_env)
 
         rc, stdout, _ = run_cli(
             "sessionstorage-set", "step", "5", env_extra=isolated_env
@@ -271,10 +281,10 @@ class TestIntegrationBrowser:
         )
         assert rc == 0
 
-    def test_state_save_and_load(self, isolated_env, tmp_path):
+    def test_state_save_and_load(self, isolated_env, storage_url, tmp_path):
         """Save and load browser state."""
-        html = "data:text/html,<p>State Test</p>"
-        run_cli("open", html, env_extra=isolated_env)
+        # data: URLs are null-origin and block localStorage; use file:// instead.
+        run_cli("open", storage_url, env_extra=isolated_env)
 
         # Set some storage
         run_cli("localstorage-set", "saved_key", "saved_val", env_extra=isolated_env)
@@ -371,14 +381,18 @@ class TestIntegrationBrowser:
         assert "resized" in stdout.lower()
 
     def test_dialog_handling(self, isolated_env):
-        """Test dialog accept/dismiss."""
+        """Test dialog accept/dismiss in a single subprocess to avoid losing dialog state."""
         html = "data:text/html,<button id='a' onclick='alert(\"hi\")'>Alert</button>"
         run_cli("open", html, env_extra=isolated_env)
 
-        # Click to trigger alert, then dismiss
-        run_cli("click", "@id=a", env_extra=isolated_env)
-        rc, stdout, _ = run_cli("dialog-dismiss", env_extra=isolated_env)
-        # This may fail if alert wasn't caught, which is ok for basic test
+        # Click and dismiss must happen in the same subprocess — the alert dialog is
+        # lost between separate CLI invocations because headless Chrome doesn't persist
+        # pending dialog state across CDP reconnections.
+        rc, stdout, _ = run_cli(
+            "run-code",
+            "import time; page.ele('@id=a').click(); time.sleep(0.3); page.handle_alert(accept=False)",
+            env_extra=isolated_env,
+        )
         assert rc == 0
 
     def test_hover(self, isolated_env):

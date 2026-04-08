@@ -26,7 +26,7 @@ import drissionpage_cli as cli
 
 class TestVersionAndHelp:
     def test_version_string(self):
-        assert cli.__version__ == "0.1.2"
+        assert cli.__version__ == "0.1.4"
 
     def test_build_parser(self):
         parser = cli.build_parser()
@@ -473,7 +473,7 @@ class TestCliInvocation:
 
         result = run_cli("--version")
         assert result.exit_code == 0
-        assert "0.1.0" in result.output
+        assert "0.1.4" in result.output
 
     def test_no_command_shows_help(self):
         """No command shows help text."""
@@ -638,6 +638,52 @@ class TestGetPageOptions:
         self._run_get_page({"system_user_path": True, "headless": False}, tmp_path, mock_co, mock_page)
         mock_co.use_system_user_path.assert_called_once_with(True)
         mock_co.headless.assert_called_once_with(False)
+
+    def test_stale_session_dead_port_cleaned_without_connect(self, tmp_path):
+        """When session port is not in use, we must clean up WITHOUT calling
+        ChromiumPage (which would launch a phantom Chrome on the stale port)."""
+        sessions_file = tmp_path / "sessions.json"
+        cli_dir_path = tmp_path / ".drissionpage-cli"
+        cli_dir_path.mkdir()
+        sessions_file.write_text(
+            '{"default": {"address": "127.0.0.1:9222", "pid": 99999, "started": 0}}'
+        )
+
+        mock_page = MagicMock()
+        with patch.object(cli, "SESSIONS_FILE", sessions_file), \
+             patch.object(cli, "CLI_DIR", cli_dir_path), \
+             patch("DrissionPage._functions.tools.port_is_using", return_value=False), \
+             patch("DrissionPage.ChromiumPage") as mock_chromium_page:
+            try:
+                cli._get_page("default", create=False, options=None)
+            except RuntimeError:
+                pass
+            # ChromiumPage must NOT be called — no phantom Chrome launch
+            mock_chromium_page.assert_not_called()
+
+    def test_reconnect_restores_headless_state(self, tmp_path):
+        """When reconnecting to a live session, headless state from session info
+        must be passed to ChromiumOptions to prevent DrissionPage restarting Chrome."""
+        sessions_file = tmp_path / "sessions.json"
+        cli_dir_path = tmp_path / ".drissionpage-cli"
+        cli_dir_path.mkdir()
+        sessions_file.write_text(
+            '{"default": {"address": "127.0.0.1:9333", "pid": 111, "started": 0, "headless": true}}'
+        )
+
+        mock_co = MagicMock()
+        mock_page = MagicMock()
+        mock_page.address = "127.0.0.1:9333"
+        mock_page.process_id = 111
+
+        with patch.object(cli, "SESSIONS_FILE", sessions_file), \
+             patch.object(cli, "CLI_DIR", cli_dir_path), \
+             patch("DrissionPage._functions.tools.port_is_using", return_value=True), \
+             patch("DrissionPage.ChromiumOptions", return_value=mock_co), \
+             patch("DrissionPage.ChromiumPage", return_value=mock_page):
+            cli._get_page("default", create=False, options=None)
+
+        mock_co.headless.assert_called_once_with(True)
 
 
 # ---------------------------------------------------------------------------
@@ -942,7 +988,7 @@ class TestCommandHandlersMocked:
             args.session = None
             args.domain = None
             cli.cmd_cookie_list(args)
-        mock_page.cookies.assert_called_once_with(as_dict=False, all_info=True)
+        mock_page.cookies.assert_called_once_with(all_info=True)
 
     def test_cmd_cookie_list_filtered(self, tmp_path):
         mock_page = self._make_mock_page()

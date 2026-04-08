@@ -15,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-__version__ = "0.1.2"
+__version__ = "0.1.4"
 
 # Session storage directory
 CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", ".drissionpage-cli"))
@@ -72,27 +72,45 @@ def _get_page(session_name, create=False, options=None):
     so that multiple named sessions can coexist.
     """
     from DrissionPage import ChromiumPage, ChromiumOptions
+    from DrissionPage._functions.tools import port_is_using
 
     sessions = _load_sessions()
     info = sessions.get(session_name)
 
     if info:
-        # Try to reconnect to existing session
-        co = ChromiumOptions()
-        co.set_address(info["address"])
-        try:
-            page = ChromiumPage(addr_or_opts=co)
-            if not create:
-                return page
-            # create=True but session is alive — close old one first
+        address = info["address"]
+        ip, port_str = address.split(":")
+        if port_is_using(ip, port_str):
+            # Browser is alive — connect to it.
+            # We must restore the headless state that was used when the session was
+            # created.  If we don't, DrissionPage detects a headless/headed mismatch
+            # and calls Browser.close() to kill Chrome before relaunching it —
+            # which then fails for a reconnect-only scenario.
+            co = ChromiumOptions()
+            co.set_address(address)
+            co.headless(info.get("headless", True))
             try:
-                page.quit()
+                page = ChromiumPage(addr_or_opts=co)
+                if not create:
+                    return page
+                # create=True but session is alive — close old one first
+                try:
+                    page.quit()
+                except Exception:
+                    pass
+                _kill_session(sessions, session_name)
+                sessions = _load_sessions()
             except Exception:
-                pass
-            _kill_session(sessions, session_name)
-            sessions = _load_sessions()
-        except Exception:
-            # Browser is dead — clean up stale entry
+                _kill_session(sessions, session_name)
+                sessions = _load_sessions()
+                if not create:
+                    raise RuntimeError(
+                        f"Session '{session_name}' is no longer running. "
+                        f"Use 'open' to start a new one."
+                    )
+        else:
+            # Port not in use — browser is dead, clean up without trying to connect
+            # (avoids DrissionPage launching a phantom Chrome on the stale port).
             _kill_session(sessions, session_name)
             sessions = _load_sessions()
             if not create:
@@ -142,6 +160,7 @@ def _get_page(session_name, create=False, options=None):
         "address": page.address,
         "pid": page.process_id,
         "started": time.time(),
+        "headless": options.get("headless", True) if options else True,
     }
     _save_sessions(sessions)
     return page

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-CLI_PATH = Path(__file__).resolve().parent.parent / "drissionpage_cli.py"
+CLI_ROOT = Path(__file__).resolve().parent.parent
 
 
 class CliResult:
@@ -37,10 +37,11 @@ class CliResult:
 def run_cli(*args, env_extra=None, cwd=None, timeout=30):
     """Run drissionpage-cli with the given arguments and return a CliResult."""
     env = os.environ.copy()
+    env["PYTHONPATH"] = str(CLI_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     if env_extra:
         env.update(env_extra)
 
-    cmd = [sys.executable, str(CLI_PATH)] + list(args)
+    cmd = [sys.executable, "-m", "drissionpage_cli"] + list(args)
     try:
         proc = subprocess.run(
             cmd,
