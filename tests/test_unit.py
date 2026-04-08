@@ -292,6 +292,17 @@ class TestVersionAndHelp:
         assert args.command == "open"
         assert args.profile == "/tmp/profile"
 
+    def test_parse_open_with_system_user_path(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["open", "--system-user-path"])
+        assert args.command == "open"
+        assert args.system_user_path is True
+
+    def test_parse_open_system_user_path_default_false(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["open"])
+        assert args.system_user_path is False
+
     def test_parse_console_command(self):
         parser = cli.build_parser()
         args = parser.parse_args(["console", "warning"])
@@ -576,6 +587,57 @@ class TestStateSaveLoad:
         assert any("localStorage.setItem" in str(call) for call in mock_page.run_js.call_args_list)
         # Verify sessionStorage was set
         assert any("sessionStorage.setItem" in str(call) for call in mock_page.run_js.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# _get_page options (mocked ChromiumOptions / ChromiumPage)
+# ---------------------------------------------------------------------------
+
+
+class TestGetPageOptions:
+    """Test that _get_page passes options correctly to ChromiumOptions."""
+
+    def _make_mock_co(self):
+        return MagicMock()
+
+    def _run_get_page(self, options, tmp_path, mock_co, mock_page):
+        sessions_file = tmp_path / "sessions.json"
+        cli_dir_path = tmp_path / ".drissionpage-cli"
+        cli_dir_path.mkdir()
+
+        with patch.object(cli, "SESSIONS_FILE", sessions_file), \
+             patch.object(cli, "CLI_DIR", cli_dir_path), \
+             patch("DrissionPage.ChromiumOptions", return_value=mock_co), \
+             patch("DrissionPage.ChromiumPage", return_value=mock_page):
+            mock_page.address = "127.0.0.1:9333"
+            mock_page.process_id = 999
+            cli._get_page("default", create=True, options=options)
+
+    def test_system_user_path_calls_use_system_user_path(self, tmp_path):
+        mock_co = self._make_mock_co()
+        mock_page = MagicMock()
+        self._run_get_page({"system_user_path": True}, tmp_path, mock_co, mock_page)
+        mock_co.use_system_user_path.assert_called_once_with(True)
+
+    def test_system_user_path_skips_auto_port(self, tmp_path):
+        mock_co = self._make_mock_co()
+        mock_page = MagicMock()
+        self._run_get_page({"system_user_path": True}, tmp_path, mock_co, mock_page)
+        mock_co.auto_port.assert_not_called()
+
+    def test_no_system_user_path_calls_auto_port(self, tmp_path):
+        mock_co = self._make_mock_co()
+        mock_page = MagicMock()
+        self._run_get_page({"system_user_path": False}, tmp_path, mock_co, mock_page)
+        mock_co.auto_port.assert_called_once()
+        mock_co.use_system_user_path.assert_not_called()
+
+    def test_system_user_path_with_headed(self, tmp_path):
+        mock_co = self._make_mock_co()
+        mock_page = MagicMock()
+        self._run_get_page({"system_user_path": True, "headless": False}, tmp_path, mock_co, mock_page)
+        mock_co.use_system_user_path.assert_called_once_with(True)
+        mock_co.headless.assert_called_once_with(False)
 
 
 # ---------------------------------------------------------------------------

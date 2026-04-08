@@ -90,7 +90,10 @@ drissionpage-cli -s=variant-b screenshot
 ### Persistent Profile
 
 ```bash
-# Use persistent profile
+# Use system default Chrome profile (inherits all login sessions)
+drissionpage-cli open --system-user-path
+
+# Use a specific profile directory
 drissionpage-cli open https://example.com --profile=/path/to/profile
 
 # Specific CDP port

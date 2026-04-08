@@ -108,7 +108,13 @@ def _get_page(session_name, create=False, options=None):
 
     # Create new session
     co = ChromiumOptions()
-    co.auto_port()  # pick a free port to avoid conflicts with stale browsers
+
+    use_system_user_path = options and options.get("system_user_path")
+    if use_system_user_path:
+        # use_system_user_path is incompatible with auto_port (auto_port creates a temp profile)
+        co.use_system_user_path(True)
+    else:
+        co.auto_port()  # pick a free port to avoid conflicts with stale browsers
 
     if options:
         if options.get("headless") is not None:
@@ -216,6 +222,7 @@ def cmd_open(args):
         "headless": not getattr(args, "headed", False),
         "user_data_path": getattr(args, "profile", None),
         "port": getattr(args, "port", None),
+        "system_user_path": getattr(args, "system_user_path", False),
     }
     page = _get_page(session, create=True, options=options)
 
@@ -1105,6 +1112,8 @@ def build_parser():
     p.add_argument("url", nargs="?", help="URL to navigate to")
     p.add_argument("--headed", action="store_true", help="Run in headed mode")
     p.add_argument("--profile", help="User data directory path")
+    p.add_argument("--system-user-path", action="store_true", dest="system_user_path",
+                   help="Use system default Chrome profile (inherits login sessions)")
     p.add_argument("--port", type=int, help="CDP debugging port")
     p.set_defaults(func=cmd_open)
 

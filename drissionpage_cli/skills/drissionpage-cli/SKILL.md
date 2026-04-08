@@ -146,7 +146,9 @@ drissionpage-cli run-code --filename=script.py
 ```bash
 # Run in headed mode (browser window visible)
 drissionpage-cli open --headed
-# Use persistent user profile
+# Use system default Chrome profile (inherits all login sessions)
+drissionpage-cli open --system-user-path
+# Use a specific user profile directory
 drissionpage-cli open --profile=/path/to/profile
 # Use specific CDP port
 drissionpage-cli open --port=9222
