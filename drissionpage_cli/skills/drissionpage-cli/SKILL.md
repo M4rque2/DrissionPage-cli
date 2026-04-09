@@ -146,15 +146,15 @@ drissionpage-cli run-code --filename=script.py
 ```bash
 # Run in headed mode (browser window visible)
 drissionpage-cli open --headed
-# Use system default Chrome profile (inherits all login sessions)
-drissionpage-cli open --system-user-path
-# Use a specific user profile directory
+# Run in sandbox mode: isolated temporary profile, no persistent state
+drissionpage-cli open --sandbox
+# Use a specific user profile directory (instead of system profile)
 drissionpage-cli open --profile=/path/to/profile
-# Use specific CDP port
-drissionpage-cli open --port=9222
+# Use specific CDP port (default: 9222)
+drissionpage-cli open --port=9333
 # Close the browser
 drissionpage-cli close
-# Delete user data for the default session
+# Delete user data for the session (sandbox/--profile sessions only)
 drissionpage-cli delete-data
 ```
 

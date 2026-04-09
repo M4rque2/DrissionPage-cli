@@ -21,6 +21,9 @@ __version__ = "0.1.4"
 CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", ".drissionpage-cli"))
 SESSIONS_FILE = CLI_DIR / "sessions.json"
 
+# Default CDP port — drissionpage-cli owns this port exclusively
+DEFAULT_PORT = int(os.environ.get("DRISSIONPAGE_CLI_PORT", "9222"))
+
 
 def ensure_cli_dir():
     CLI_DIR.mkdir(parents=True, exist_ok=True)
@@ -65,11 +68,27 @@ def _kill_session(sessions, session_name):
     _save_sessions(sessions)
 
 
+def _system_chrome_profile_path():
+    """Return the default Chrome user data directory for the current OS."""
+    import platform
+    system = platform.system()
+    if system == "Darwin":
+        return str(Path.home() / "Library" / "Application Support" / "Google" / "Chrome")
+    elif system == "Windows":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        return str(Path(local_app_data) / "Google" / "Chrome" / "User Data")
+    else:  # Linux and others
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+        return str(Path(xdg_config) / "google-chrome")
+
+
 def _get_page(session_name, create=False, options=None):
     """Get or create a ChromiumPage for the given session.
 
-    DrissionPage manages browser instances via CDP. We track ports per session
-    so that multiple named sessions can coexist.
+    Default behaviour: connect to (or launch) Chrome on port 9222 using the
+    system user profile, so login state and history persist across runs.
+
+    Pass options={"sandbox": True} for an isolated one-shot session.
     """
     from DrissionPage import ChromiumPage, ChromiumOptions
     from DrissionPage._functions.tools import port_is_using
@@ -82,10 +101,6 @@ def _get_page(session_name, create=False, options=None):
         ip, port_str = address.split(":")
         if port_is_using(ip, port_str):
             # Browser is alive — connect to it.
-            # We must restore the headless state that was used when the session was
-            # created.  If we don't, DrissionPage detects a headless/headed mismatch
-            # and calls Browser.close() to kill Chrome before relaunching it —
-            # which then fails for a reconnect-only scenario.
             co = ChromiumOptions()
             co.set_address(address)
             co.headless(info.get("headless", True))
@@ -109,8 +124,7 @@ def _get_page(session_name, create=False, options=None):
                         f"Use 'open' to start a new one."
                     )
         else:
-            # Port not in use — browser is dead, clean up without trying to connect
-            # (avoids DrissionPage launching a phantom Chrome on the stale port).
+            # Port not in use — browser is dead, clean up.
             _kill_session(sessions, session_name)
             sessions = _load_sessions()
             if not create:
@@ -124,29 +138,54 @@ def _get_page(session_name, create=False, options=None):
             f"No active session '{session_name}'. Use 'open' to start one."
         )
 
-    # Create new session
+    # --- Create new session ---
+    sandbox = options and options.get("sandbox", False)
+    explicit_port = options and options.get("port")
+    # headless=True (default) allows use_system_user_path; headed mode needs explicit path
+    is_headless = (not options) or options.get("headless", True)
+
     co = ChromiumOptions()
 
-    use_system_user_path = options and options.get("system_user_path")
-    if use_system_user_path:
-        # auto_port picks a free port; use_system_user_path then causes DrissionPage
-        # to strip the --user-data-dir arg at launch, so Chrome uses the system profile.
+    if sandbox:
+        # Isolated profile: random port + temporary user data dir managed by DrissionPage.
+        # State is not persisted — the temp dir is cleaned up when Chrome exits.
         co.auto_port()
-        co.use_system_user_path(True)
     else:
-        co.auto_port()  # pick a free port to avoid conflicts with stale browsers
+        # Persistent profile: fixed port + system user profile.
+        # Chrome inherits the user's existing login state, history, cookies, etc.
+        port = explicit_port or DEFAULT_PORT
+        if port_is_using("127.0.0.1", str(port)):
+            raise RuntimeError(
+                f"Port {port} is already in use by another program.\n"
+                f"Stop the other program, or specify a different port with --port=<port>.\n"
+                f"To force-kill all CLI-managed browsers: drissionpage-cli kill-all"
+            )
+        co.set_local_port(port)
+
+        explicit_profile = options and options.get("user_data_path")
+        if explicit_profile:
+            co.set_user_data_path(explicit_profile)
+        elif is_headless:
+            # Headless mode: --headless=new bypasses Chrome's remote-debugging restriction
+            # on the default profile, so use_system_user_path works fine.
+            co.use_system_user_path(True)
+        else:
+            # Headed mode: Chrome refuses remote debugging when --user-data-dir is absent or
+            # equals the OS-default profile path (security restriction).
+            # Workaround: pass the real system profile path as --user-data-dir, AND temporarily
+            # redirect XDG_CONFIG_HOME so Chrome considers that path "non-default".
+            # This lets Chrome enable remote debugging while still using the real profile.
+            system_profile = _system_chrome_profile_path()
+            os.environ["XDG_CONFIG_HOME"] = str(CLI_DIR / ".fake-xdg")
+            co.set_user_data_path(system_profile)
 
     if options:
         if options.get("headless") is not None:
             co.headless(options["headless"])
         if options.get("browser_path"):
             co.set_browser_path(options["browser_path"])
-        if options.get("user_data_path"):
-            co.set_user_data_path(options["user_data_path"])
         if options.get("proxy"):
             co.set_proxy(options["proxy"])
-        if options.get("port"):
-            co.set_local_port(options["port"])
         if options.get("user_agent"):
             co.set_user_agent(options["user_agent"])
         if options.get("args"):
@@ -161,6 +200,7 @@ def _get_page(session_name, create=False, options=None):
         "pid": page.process_id,
         "started": time.time(),
         "headless": options.get("headless", True) if options else True,
+        "sandbox": sandbox,
     }
     _save_sessions(sessions)
     return page
@@ -243,7 +283,7 @@ def cmd_open(args):
         "headless": not getattr(args, "headed", False),
         "user_data_path": getattr(args, "profile", None),
         "port": getattr(args, "port", None),
-        "system_user_path": getattr(args, "system_user_path", False),
+        "sandbox": getattr(args, "sandbox", False),
     }
     page = _get_page(session, create=True, options=options)
 
@@ -961,22 +1001,67 @@ def cmd_close_all(args):
 
 
 def cmd_kill_all(args):
-    """Kill all browser processes."""
+    """Kill all browser processes.
+
+    Tries a graceful CDP quit first so Chrome can remove its SingletonLock and
+    other profile lock files. Falls back to SIGTERM then SIGKILL only for
+    processes that don't respond.
+    """
     import subprocess
 
     sessions = _load_sessions()
+    pids = [info["pid"] for info in sessions.values() if info.get("pid")]
+
+    # Phase 1: graceful CDP quit — Chrome runs its own cleanup (removes SingletonLock etc.)
     for name, info in sessions.items():
-        pid = info.get("pid")
-        if pid:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+        try:
+            from DrissionPage import ChromiumPage, ChromiumOptions
+
+            co = ChromiumOptions()
+            co.set_address(info["address"])
+            page = ChromiumPage(addr_or_opts=co)
+            page.quit()
+        except Exception:
+            pass
+
+    # Give Chrome up to 3 s to finish its cleanup after CDP close
+    end = time.time() + 3
+    alive = list(pids)
+    while alive and time.time() < end:
+        alive = [p for p in alive if _pid_alive(p)]
+        if alive:
+            time.sleep(0.1)
+
+    # Phase 2: SIGTERM any that are still alive
+    for pid in alive:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    time.sleep(1)
+
+    # Phase 3: SIGKILL any that still didn't exit
+    for pid in alive:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
     _save_sessions({})
-    # Also kill any orphaned chrome/chromium
+
+    # Also clean up any orphaned chrome/chromium with remote debugging
     try:
         subprocess.run(
-            ["pkill", "-f", "chrome.*--remote-debugging-port"],
+            ["pkill", "-TERM", "-f", "chrome.*--remote-debugging-port"],
+            capture_output=True,
+        )
+    except Exception:
+        pass
+    time.sleep(1)
+    try:
+        subprocess.run(
+            ["pkill", "-KILL", "-f", "chrome.*--remote-debugging-port"],
             capture_output=True,
         )
     except Exception:
@@ -984,11 +1069,38 @@ def cmd_kill_all(args):
     print("All browser processes killed")
 
 
+def _pid_alive(pid):
+    """Return True if the process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def cmd_delete_data(args):
-    """Delete user data for a session."""
+    """Delete user data for a session (only applicable to sandbox or --profile sessions)."""
     session = _get_session_name(args)
     sessions = _load_sessions()
     info = sessions.get(session, {})
+
+    # System-profile sessions don't have CLI-managed user data
+    if not info.get("sandbox") and not info.get("user_data_path"):
+        # Try to just close the browser and clear the session record
+        try:
+            page = _get_page(session)
+            page.quit()
+        except Exception:
+            pass
+        if session in sessions:
+            del sessions[session]
+            _save_sessions(sessions)
+        print(
+            f"Session '{session}' closed.\n"
+            f"Note: this session uses your system Chrome profile — "
+            f"its data (cookies, history) was NOT deleted."
+        )
+        return
 
     # Try to close the browser first
     try:
@@ -1132,10 +1244,10 @@ def build_parser():
     p = subparsers.add_parser("open", help="Open browser, optionally navigate to URL")
     p.add_argument("url", nargs="?", help="URL to navigate to")
     p.add_argument("--headed", action="store_true", help="Run in headed mode")
-    p.add_argument("--profile", help="User data directory path")
-    p.add_argument("--system-user-path", action="store_true", dest="system_user_path",
-                   help="Use system default Chrome profile (inherits login sessions)")
-    p.add_argument("--port", type=int, help="CDP debugging port")
+    p.add_argument("--profile", help="Custom user data directory (overrides system profile)")
+    p.add_argument("--sandbox", action="store_true",
+                   help="Isolated session: random port + temporary profile, no persistent state")
+    p.add_argument("--port", type=int, help=f"CDP debugging port (default: {DEFAULT_PORT})")
     p.set_defaults(func=cmd_open)
 
     # goto

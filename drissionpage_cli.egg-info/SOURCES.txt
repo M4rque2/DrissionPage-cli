@@ -2,6 +2,7 @@ LICENSE
 README.md
 pyproject.toml
 drissionpage_cli/__init__.py
+drissionpage_cli/__main__.py
 drissionpage_cli.egg-info/PKG-INFO
 drissionpage_cli.egg-info/SOURCES.txt
 drissionpage_cli.egg-info/dependency_links.txt

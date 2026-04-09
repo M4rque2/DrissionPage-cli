@@ -292,16 +292,16 @@ class TestVersionAndHelp:
         assert args.command == "open"
         assert args.profile == "/tmp/profile"
 
-    def test_parse_open_with_system_user_path(self):
+    def test_parse_open_with_sandbox(self):
         parser = cli.build_parser()
-        args = parser.parse_args(["open", "--system-user-path"])
+        args = parser.parse_args(["open", "--sandbox"])
         assert args.command == "open"
-        assert args.system_user_path is True
+        assert args.sandbox is True
 
-    def test_parse_open_system_user_path_default_false(self):
+    def test_parse_open_sandbox_default_false(self):
         parser = cli.build_parser()
         args = parser.parse_args(["open"])
-        assert args.system_user_path is False
+        assert args.sandbox is False
 
     def test_parse_console_command(self):
         parser = cli.build_parser()
@@ -608,35 +608,50 @@ class TestGetPageOptions:
         with patch.object(cli, "SESSIONS_FILE", sessions_file), \
              patch.object(cli, "CLI_DIR", cli_dir_path), \
              patch("DrissionPage.ChromiumOptions", return_value=mock_co), \
-             patch("DrissionPage.ChromiumPage", return_value=mock_page):
+             patch("DrissionPage.ChromiumPage", return_value=mock_page), \
+             patch("DrissionPage._functions.tools.port_is_using", return_value=False):
             mock_page.address = "127.0.0.1:9333"
             mock_page.process_id = 999
             cli._get_page("default", create=True, options=options)
 
-    def test_system_user_path_calls_use_system_user_path(self, tmp_path):
+    def test_default_uses_system_user_path(self, tmp_path):
+        """Default (no sandbox) should use system profile."""
         mock_co = self._make_mock_co()
         mock_page = MagicMock()
-        self._run_get_page({"system_user_path": True}, tmp_path, mock_co, mock_page)
+        self._run_get_page({}, tmp_path, mock_co, mock_page)
         mock_co.use_system_user_path.assert_called_once_with(True)
 
-    def test_system_user_path_also_calls_auto_port(self, tmp_path):
+    def test_default_uses_fixed_port(self, tmp_path):
+        """Default (no sandbox) should set fixed port, not auto_port."""
         mock_co = self._make_mock_co()
         mock_page = MagicMock()
-        self._run_get_page({"system_user_path": True}, tmp_path, mock_co, mock_page)
-        mock_co.auto_port.assert_called_once()
+        self._run_get_page({}, tmp_path, mock_co, mock_page)
+        mock_co.set_local_port.assert_called_once_with(cli.DEFAULT_PORT)
+        mock_co.auto_port.assert_not_called()
 
-    def test_no_system_user_path_calls_auto_port(self, tmp_path):
+    def test_sandbox_calls_auto_port(self, tmp_path):
+        """Sandbox mode should use auto_port for an isolated temporary session."""
         mock_co = self._make_mock_co()
         mock_page = MagicMock()
-        self._run_get_page({"system_user_path": False}, tmp_path, mock_co, mock_page)
+        self._run_get_page({"sandbox": True}, tmp_path, mock_co, mock_page)
         mock_co.auto_port.assert_called_once()
         mock_co.use_system_user_path.assert_not_called()
 
-    def test_system_user_path_with_headed(self, tmp_path):
+    def test_sandbox_does_not_set_fixed_port(self, tmp_path):
+        """Sandbox mode must NOT call set_local_port — port comes from auto_port."""
         mock_co = self._make_mock_co()
         mock_page = MagicMock()
-        self._run_get_page({"system_user_path": True, "headless": False}, tmp_path, mock_co, mock_page)
-        mock_co.use_system_user_path.assert_called_once_with(True)
+        self._run_get_page({"sandbox": True}, tmp_path, mock_co, mock_page)
+        mock_co.set_local_port.assert_not_called()
+
+    def test_default_with_headed(self, tmp_path):
+        """Headed mode: uses explicit user-data-dir (not use_system_user_path) to bypass
+        Chrome's remote-debugging restriction on the default profile path."""
+        mock_co = self._make_mock_co()
+        mock_page = MagicMock()
+        self._run_get_page({"headless": False}, tmp_path, mock_co, mock_page)
+        mock_co.set_user_data_path.assert_called_once()
+        mock_co.use_system_user_path.assert_not_called()
         mock_co.headless.assert_called_once_with(False)
 
     def test_stale_session_dead_port_cleaned_without_connect(self, tmp_path):

@@ -125,7 +125,7 @@ class TestIntegrationBrowser:
     def test_open_and_close(self, isolated_env):
         """Open browser with data URL and close it."""
         rc, stdout, stderr = run_cli(
-            "open", "data:text/html,<h1>Hello</h1>",
+            "open", "--headed", "data:text/html,<h1>Hello</h1>",
             env_extra=isolated_env,
         )
         assert rc == 0
@@ -319,10 +319,8 @@ class TestIntegrationBrowser:
         assert rc == 0
         assert "Tabs" in stdout
 
-        # New tab
-        rc, stdout, _ = run_cli(
-            "tab-new", "data:text/html,<p>Tab2</p>", env_extra=isolated_env
-        )
+        # New blank tab (no URL — avoids data: URL validation in DrissionPage)
+        rc, stdout, _ = run_cli("tab-new", env_extra=isolated_env)
         assert rc == 0
 
     def test_run_code_inline(self, isolated_env):
@@ -431,13 +429,15 @@ class TestIntegrationBrowser:
         assert rc == 0
 
     def test_multiple_sessions(self, isolated_env, tmp_path):
-        """Run two named sessions concurrently."""
+        """Run two named sessions concurrently using --sandbox (each gets its own auto port)."""
         env1 = {**isolated_env, "DRISSIONPAGE_CLI_SESSION": "sess-a"}
         env2 = {**isolated_env, "DRISSIONPAGE_CLI_SESSION": "sess-b"}
 
-        # Open both sessions
-        rc1, _, _ = run_cli("open", "data:text/html,<p>A</p>", env_extra=env1)
-        rc2, _, _ = run_cli("open", "data:text/html,<p>B</p>", env_extra=env2)
+        # Open both sessions in sandbox mode so they each get a distinct auto port
+        rc1, _, _ = run_cli("open", "--sandbox", "data:text/html,<p>A</p>", env_extra=env1)
+        rc2, _, _ = run_cli("open", "--sandbox", "data:text/html,<p>B</p>", env_extra=env2)
+        assert rc1 == 0
+        assert rc2 == 0
         assert rc1 == 0
         assert rc2 == 0
 
