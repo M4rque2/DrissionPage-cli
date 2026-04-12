@@ -17,8 +17,9 @@ from pathlib import Path
 
 __version__ = "0.1.4"
 
-# Session storage directory
-CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", ".drissionpage-cli"))
+# Session storage directory — home-based so profile and state persist across
+# different working directories.
+CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", str(Path.home() / ".drissionpage-cli")))
 SESSIONS_FILE = CLI_DIR / "sessions.json"
 
 # Default CDP port — drissionpage-cli owns this port exclusively
@@ -68,25 +69,16 @@ def _kill_session(sessions, session_name):
     _save_sessions(sessions)
 
 
-def _system_chrome_profile_path():
-    """Return the default Chrome user data directory for the current OS."""
-    import platform
-    system = platform.system()
-    if system == "Darwin":
-        return str(Path.home() / "Library" / "Application Support" / "Google" / "Chrome")
-    elif system == "Windows":
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        return str(Path(local_app_data) / "Google" / "Chrome" / "User Data")
-    else:  # Linux and others
-        xdg_config = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-        return str(Path(xdg_config) / "google-chrome")
+def _cli_profile_path():
+    """Return the persistent Chrome profile directory managed by drissionpage-cli."""
+    return CLI_DIR / "profile"
 
 
 def _get_page(session_name, create=False, options=None):
     """Get or create a ChromiumPage for the given session.
 
-    Default behaviour: connect to (or launch) Chrome on port 9222 using the
-    system user profile, so login state and history persist across runs.
+    Default behaviour: launch headed Chrome on port 9222 using the CLI-managed
+    profile at ~/.drissionpage-cli/profile, so login state persists across runs.
 
     Pass options={"sandbox": True} for an isolated one-shot session.
     """
@@ -103,7 +95,7 @@ def _get_page(session_name, create=False, options=None):
             # Browser is alive — connect to it.
             co = ChromiumOptions()
             co.set_address(address)
-            co.headless(info.get("headless", True))
+            co.headless(info.get("headless", False))
             try:
                 page = ChromiumPage(addr_or_opts=co)
                 if not create:
@@ -141,8 +133,7 @@ def _get_page(session_name, create=False, options=None):
     # --- Create new session ---
     sandbox = options and options.get("sandbox", False)
     explicit_port = options and options.get("port")
-    # headless=True (default) allows use_system_user_path; headed mode needs explicit path
-    is_headless = (not options) or options.get("headless", True)
+    is_headless = options.get("headless", False) if options else False
 
     co = ChromiumOptions()
 
@@ -151,8 +142,9 @@ def _get_page(session_name, create=False, options=None):
         # State is not persisted — the temp dir is cleaned up when Chrome exits.
         co.auto_port()
     else:
-        # Persistent profile: fixed port + system user profile.
-        # Chrome inherits the user's existing login state, history, cookies, etc.
+        # Persistent profile: fixed port + CLI-managed profile at ~/.drissionpage-cli/profile.
+        # Works in both headed and headless mode — Chrome 136+ only blocks remote debugging
+        # on the OS-default profile path, not on custom paths.
         port = explicit_port or DEFAULT_PORT
         if port_is_using("127.0.0.1", str(port)):
             raise RuntimeError(
@@ -162,22 +154,9 @@ def _get_page(session_name, create=False, options=None):
             )
         co.set_local_port(port)
 
-        explicit_profile = options and options.get("user_data_path")
-        if explicit_profile:
-            co.set_user_data_path(explicit_profile)
-        elif is_headless:
-            # Headless mode: --headless=new bypasses Chrome's remote-debugging restriction
-            # on the default profile, so use_system_user_path works fine.
-            co.use_system_user_path(True)
-        else:
-            # Headed mode: Chrome refuses remote debugging when --user-data-dir is absent or
-            # equals the OS-default profile path (security restriction).
-            # Workaround: pass the real system profile path as --user-data-dir, AND temporarily
-            # redirect XDG_CONFIG_HOME so Chrome considers that path "non-default".
-            # This lets Chrome enable remote debugging while still using the real profile.
-            system_profile = _system_chrome_profile_path()
-            os.environ["XDG_CONFIG_HOME"] = str(CLI_DIR / ".fake-xdg")
-            co.set_user_data_path(system_profile)
+        profile_path = (options and options.get("user_data_path")) or str(_cli_profile_path())
+        _cli_profile_path().mkdir(parents=True, exist_ok=True)
+        co.set_user_data_path(profile_path)
 
     if options:
         if options.get("headless") is not None:
@@ -199,7 +178,7 @@ def _get_page(session_name, create=False, options=None):
         "address": page.address,
         "pid": page.process_id,
         "started": time.time(),
-        "headless": options.get("headless", True) if options else True,
+        "headless": options.get("headless", False) if options else False,
         "sandbox": sandbox,
     }
     _save_sessions(sessions)
@@ -280,7 +259,7 @@ def cmd_open(args):
     """Open a browser, optionally navigate to a URL."""
     session = _get_session_name(args)
     options = {
-        "headless": not getattr(args, "headed", False),
+        "headless": getattr(args, "headless", False),
         "user_data_path": getattr(args, "profile", None),
         "port": getattr(args, "port", None),
         "sandbox": getattr(args, "sandbox", False),
@@ -1079,48 +1058,48 @@ def _pid_alive(pid):
 
 
 def cmd_delete_data(args):
-    """Delete user data for a session (only applicable to sandbox or --profile sessions)."""
+    """Delete user data for a session.
+
+    For sandbox sessions: deletes the temporary profile.
+    For CLI-profile sessions: closes the browser; use --reset-profile to also
+    wipe ~/.drissionpage-cli/profile (this resets login state for ALL sessions).
+    """
+    import shutil
+
     session = _get_session_name(args)
     sessions = _load_sessions()
     info = sessions.get(session, {})
 
-    # System-profile sessions don't have CLI-managed user data
-    if not info.get("sandbox") and not info.get("user_data_path"):
-        # Try to just close the browser and clear the session record
-        try:
-            page = _get_page(session)
-            page.quit()
-        except Exception:
-            pass
-        if session in sessions:
-            del sessions[session]
-            _save_sessions(sessions)
-        print(
-            f"Session '{session}' closed.\n"
-            f"Note: this session uses your system Chrome profile — "
-            f"its data (cookies, history) was NOT deleted."
-        )
-        return
-
-    # Try to close the browser first
+    # Close the browser first
     try:
         page = _get_page(session)
-        user_data = page.user_data_path
+        sandbox_user_data = page.user_data_path if info.get("sandbox") else None
         page.quit()
     except Exception:
-        user_data = None
+        sandbox_user_data = None
 
     if session in sessions:
         del sessions[session]
         _save_sessions(sessions)
 
-    if user_data and Path(user_data).exists():
-        import shutil
+    if info.get("sandbox") and sandbox_user_data and Path(sandbox_user_data).exists():
+        shutil.rmtree(sandbox_user_data, ignore_errors=True)
+        print(f"Deleted sandbox profile for '{session}' at {sandbox_user_data}")
+        return
 
-        shutil.rmtree(user_data, ignore_errors=True)
-        print(f"Deleted user data for '{session}' at {user_data}")
+    # CLI-managed profile (default sessions)
+    cli_profile = _cli_profile_path()
+    if getattr(args, "reset_profile", False):
+        if cli_profile.exists():
+            shutil.rmtree(cli_profile, ignore_errors=True)
+            print(f"CLI profile deleted: {cli_profile}")
+            print("All login state has been reset. You will need to log in again.")
+        else:
+            print("No CLI profile found — nothing to delete.")
     else:
-        print(f"Deleted session '{session}' (no user data directory found)")
+        print(f"Session '{session}' closed.")
+        print(f"Login state retained at: {cli_profile}")
+        print("To reset all login state: drissionpage-cli delete-data --reset-profile")
 
 
 # --- State save/load ---
@@ -1243,7 +1222,7 @@ def build_parser():
     # open
     p = subparsers.add_parser("open", help="Open browser, optionally navigate to URL")
     p.add_argument("url", nargs="?", help="URL to navigate to")
-    p.add_argument("--headed", action="store_true", help="Run in headed mode")
+    p.add_argument("--headless", action="store_true", help="Run in headless mode")
     p.add_argument("--profile", help="Custom user data directory (overrides system profile)")
     p.add_argument("--sandbox", action="store_true",
                    help="Isolated session: random port + temporary profile, no persistent state")
@@ -1501,9 +1480,14 @@ def build_parser():
     subparsers.add_parser(
         "kill-all", help="Kill all browser processes"
     ).set_defaults(func=cmd_kill_all)
-    subparsers.add_parser(
+    p = subparsers.add_parser(
         "delete-data", help="Delete user data for session"
-    ).set_defaults(func=cmd_delete_data)
+    )
+    p.add_argument(
+        "--reset-profile", action="store_true",
+        help=f"Also wipe the CLI Chrome profile at ~/.drissionpage-cli/profile (resets all login state)"
+    )
+    p.set_defaults(func=cmd_delete_data)
 
     # State
     p = subparsers.add_parser("state-save", help="Save browser state")

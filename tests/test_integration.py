@@ -125,7 +125,7 @@ class TestIntegrationBrowser:
     def test_open_and_close(self, isolated_env):
         """Open browser with data URL and close it."""
         rc, stdout, stderr = run_cli(
-            "open", "--headed", "data:text/html,<h1>Hello</h1>",
+            "open", "data:text/html,<h1>Hello</h1>",
             env_extra=isolated_env,
         )
         assert rc == 0
@@ -368,7 +368,7 @@ class TestIntegrationBrowser:
 
         rc, stdout, _ = run_cli("delete-data", env_extra=isolated_env)
         assert rc == 0
-        assert "Deleted" in stdout or "deleted" in stdout.lower() or "not found" in stdout.lower()
+        assert "closed" in stdout.lower() or "deleted" in stdout.lower() or "not found" in stdout.lower()
 
     def test_resize_window(self, isolated_env):
         """Resize the browser window."""

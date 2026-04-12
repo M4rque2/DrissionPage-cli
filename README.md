@@ -3,10 +3,26 @@ Token-efficient browser automation CLI for coding agents, powered by [DrissionPa
 
 Mirrors the architecture of [playwright-cli](https://github.com/microsoft/playwright-cli) but uses DrissionPage as the backend — pure Python, no Node.js required.
 
-## Why use drissionpage-cli
+## Recommended use: Agent-controlled browser with human in the loop
 
-If you know, you know. If you don't, go use playwright-cli.
+The intended workflow is **agent drives, human assists**:
 
+1. The agent opens a visible (headed) browser and starts the task.
+2. The human watches the browser window. When the agent hits a wall — login page, CAPTCHA, 2FA prompt, cookie consent — the human steps in, completes it manually, and tells the agent to continue.
+3. Login state is saved permanently in `~/.drissionpage-cli/profile`. Log in once and every future session picks up where you left off — no re-authentication needed.
+
+```
+Agent:  drissionpage-cli open https://github.com/settings
+         → browser opens, hits sign-in page
+         → reports: "I need you to log in — complete it in the browser window, then let me know"
+Human: [logs in, solves any CAPTCHA/2FA in the browser]
+Human: "done, continue"
+Agent:  drissionpage-cli snapshot
+         → now sees the settings page, carries on autonomously
+         → login is saved; next run skips this step entirely
+```
+
+This design handles the real-world friction that fully-headless automation cannot: sites that require human verification, SSO flows, or browser fingerprint checks.
 
 ## Why CLI + Skills over MCP
 
@@ -74,7 +90,7 @@ Once installed, Claude Code automatically discovers the skill and can use `driss
 ## Quick Start
 
 ```bash
-# Open a browser (headless by default)
+# Open a headed browser (default) — user can see and interact with it
 drissionpage-cli open https://example.com
 
 # Take a snapshot of the page
@@ -94,10 +110,38 @@ drissionpage-cli screenshot --filename=result.png
 drissionpage-cli close
 ```
 
-### Headed mode
+### Headless mode (no visible window)
 
 ```bash
-drissionpage-cli open https://example.com --headed
+drissionpage-cli open https://example.com --headless
+```
+
+Use headless when running in CI or when no human oversight is needed and the site doesn't require interactive login.
+
+## Persistent Profile
+
+By default, every session uses a single persistent Chrome profile stored at:
+
+```
+~/.drissionpage-cli/profile
+```
+
+This profile accumulates cookies, localStorage, and login tokens across all sessions. The practical effect:
+
+- **Log in once** to any site — the agent never needs to authenticate again on subsequent runs.
+- Works across different working directories — the profile is home-based, not project-local.
+- Both headed and headless mode share the same profile.
+
+To reset all login state (start fresh):
+
+```bash
+drissionpage-cli delete-data --reset-profile
+```
+
+For a fully isolated throwaway session (no persistent state):
+
+```bash
+drissionpage-cli open --sandbox
 ```
 
 ## Commands
@@ -177,7 +221,7 @@ drissionpage-cli open https://example.com --headed
 | `close` | Close current session's browser |
 | `close-all` | Close all sessions |
 | `kill-all` | Kill all browser processes |
-| `delete-data` | Delete user data for a session |
+| `delete-data [--reset-profile]` | Close session; optionally wipe the persistent profile |
 
 ## Targeting Elements
 
@@ -245,17 +289,11 @@ The project includes two test suites:
 
 ### Unit tests (no browser required)
 
-92 tests covering the argument parser, session management, snapshot formatting, skill installation, state save/load, and all command handlers via mocks.
-
 ```bash
-cd DrissionPage-cli
-pip install pytest
 python3 -m pytest tests/test_unit.py -v
 ```
 
 ### Integration tests (browser required)
-
-30+ end-to-end tests that launch a real browser, navigate `data:` URLs, click elements, manage storage, take screenshots, etc.
 
 ```bash
 python3 -m pytest tests/test_integration.py -v
@@ -298,8 +336,8 @@ DrissionPage-cli/
     update.py                        # Skill update script
   tests/
     conftest.py                      # Shared fixtures
-    test_unit.py                     # 92 unit tests (mocked, no browser)
-    test_integration.py              # 30+ integration tests (real browser)
+    test_unit.py                     # Unit tests (mocked, no browser)
+    test_integration.py              # Integration tests (real browser)
 ```
 
 ## Environment Variables
@@ -307,7 +345,7 @@ DrissionPage-cli/
 | Variable | Description |
 |----------|-------------|
 | `DRISSIONPAGE_CLI_SESSION` | Default session name (default: `default`) |
-| `DRISSIONPAGE_CLI_DIR` | CLI data directory (default: `.drissionpage-cli`) |
+| `DRISSIONPAGE_CLI_DIR` | Override CLI data/profile directory (default: `~/.drissionpage-cli`) |
 | `DRISSIONPAGE_CLI_DEBUG` | Set to `1` for full tracebacks on errors |
 | `SKIP_INTEGRATION` | Set to `1` to skip browser integration tests |
 

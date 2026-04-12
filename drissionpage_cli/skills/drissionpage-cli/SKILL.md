@@ -6,10 +6,36 @@ allowed-tools: Bash(drissionpage-cli:*) Bash(python:*) Bash(pip:*)
 
 # Browser Automation with drissionpage-cli
 
+## How this works: agent drives, human assists
+
+drissionpage-cli opens a **visible (headed) browser** by default. The human can see the browser window and step in whenever needed — to log in, solve a CAPTCHA, complete a 2FA prompt, or accept a cookie banner. Once the human is done, the agent continues from where it left off.
+
+**Login state persists permanently** in `~/.drissionpage-cli/profile`. After the human logs in once, every future session is already authenticated — the agent never needs to ask again.
+
+### Typical flow
+
+```
+Agent:  drissionpage-cli open https://some-site.com/dashboard
+         → browser opens visibly; site redirects to login page
+         → "I need you to log in — complete it in the browser window, then let me know"
+Human: [logs in, handles any CAPTCHA or 2FA in the browser window]
+Human: "done"
+Agent:  drissionpage-cli snapshot
+         → now sees the dashboard; continues autonomously
+         → next run: already logged in, skips this entirely
+```
+
+**When to ask the human for help:**
+- Login / sign-in pages
+- CAPTCHA or bot-detection challenges
+- Two-factor authentication prompts
+- OAuth / SSO flows that open popup windows
+- Cookie consent dialogs that block interaction
+
 ## Quick start
 
 ```bash
-# open new browser
+# open browser (headed by default — human can see and interact)
 drissionpage-cli open
 # navigate to a page
 drissionpage-cli goto https://example.com
@@ -144,18 +170,26 @@ drissionpage-cli run-code --filename=script.py
 ## Open parameters
 
 ```bash
-# Run in headed mode (browser window visible)
-drissionpage-cli open --headed
-# Run in sandbox mode: isolated temporary profile, no persistent state
+# Default: headed browser with persistent profile (~/.drissionpage-cli/profile)
+drissionpage-cli open
+
+# Run headless (no visible window) — use for CI or sites that don't need human help
+drissionpage-cli open --headless
+
+# Sandbox mode: isolated temporary profile, no persistent state
 drissionpage-cli open --sandbox
-# Use a specific user profile directory (instead of system profile)
+
+# Use a custom profile directory
 drissionpage-cli open --profile=/path/to/profile
-# Use specific CDP port (default: 9222)
+
+# Use a specific CDP port (default: 9222)
 drissionpage-cli open --port=9333
+
 # Close the browser
 drissionpage-cli close
-# Delete user data for the session (sandbox/--profile sessions only)
-drissionpage-cli delete-data
+
+# Reset all login state (wipes ~/.drissionpage-cli/profile)
+drissionpage-cli delete-data --reset-profile
 ```
 
 ## Snapshots
@@ -168,7 +202,7 @@ After each command, drissionpage-cli provides a snapshot of the current page sta
 - Page URL: https://example.com/
 - Page Title: Example Domain
 ### Snapshot
-[Snapshot](.drissionpage-cli/snapshots/page-2026-02-14T19-22-42.html)
+[Snapshot](~/.drissionpage-cli/snapshots/page-2026-02-14T19-22-42.html)
 ```
 
 ## Targeting elements

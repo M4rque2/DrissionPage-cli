@@ -34,10 +34,10 @@ class TestVersionAndHelp:
 
     def test_parse_open_command(self):
         parser = cli.build_parser()
-        args = parser.parse_args(["open", "https://example.com", "--headed"])
+        args = parser.parse_args(["open", "https://example.com", "--headless"])
         assert args.command == "open"
         assert args.url == "https://example.com"
-        assert args.headed is True
+        assert args.headless is True
 
     def test_parse_goto_command(self):
         parser = cli.build_parser()
@@ -615,11 +615,12 @@ class TestGetPageOptions:
             cli._get_page("default", create=True, options=options)
 
     def test_default_uses_system_user_path(self, tmp_path):
-        """Default (no sandbox) should use system profile."""
+        """Default (no sandbox) should use CLI-managed profile via set_user_data_path."""
         mock_co = self._make_mock_co()
         mock_page = MagicMock()
         self._run_get_page({}, tmp_path, mock_co, mock_page)
-        mock_co.use_system_user_path.assert_called_once_with(True)
+        mock_co.set_user_data_path.assert_called_once()
+        mock_co.use_system_user_path.assert_not_called()
 
     def test_default_uses_fixed_port(self, tmp_path):
         """Default (no sandbox) should set fixed port, not auto_port."""
