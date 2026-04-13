@@ -83,7 +83,7 @@ class TestIntegrationBasic:
     def test_version(self):
         rc, stdout, stderr = run_cli("--version")
         assert rc == 0
-        assert "0.1.4" in stdout
+        assert "drissionpage-cli" in stdout
 
     def test_help(self):
         rc, stdout, stderr = run_cli("--help")

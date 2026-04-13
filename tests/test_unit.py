@@ -26,7 +26,8 @@ import drissionpage_cli as cli
 
 class TestVersionAndHelp:
     def test_version_string(self):
-        assert cli.__version__ == "0.1.4"
+        assert cli.__version__ != "unknown"
+        assert len(cli.__version__) > 0
 
     def test_build_parser(self):
         parser = cli.build_parser()

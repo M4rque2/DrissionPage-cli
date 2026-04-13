@@ -15,7 +15,11 @@ import time
 import traceback
 from pathlib import Path
 
-__version__ = "0.1.5"
+from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PackageNotFoundError
+try:
+    __version__ = _pkg_version("drissionpage-cli")
+except _PackageNotFoundError:
+    __version__ = "unknown"
 
 # Session storage directory — home-based so profile and state persist across
 # different working directories.
