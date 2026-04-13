@@ -15,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 # Session storage directory — home-based so profile and state persist across
 # different working directories.
