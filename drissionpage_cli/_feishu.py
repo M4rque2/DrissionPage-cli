@@ -521,6 +521,132 @@ class _Converter:
 
 # ── image matching & saving ────────────────────────────────────────────────────
 
+_IMG_DL_BASE = "/space/api/box/stream/download/v2/cover/"
+
+
+def _fetch_missing_images(page, block_map: dict, token_to_rel: dict,
+                          records: list, img_dir: Path, tmp_dir: Path) -> int:
+    """
+    Feishu uses a virtualised renderer that only loads images visible in the
+    viewport.  Images outside the viewport never trigger network requests,
+    so ``_save_attachments`` cannot match them.
+
+    For each unmatched image token we construct the Drive download URL
+    (pattern: /space/api/box/stream/download/v2/cover/{token}/) and trigger
+    a fetch via JavaScript inside the authenticated browser session.  The
+    network listener captures the response, which we then save normally.
+
+    Returns the number of additionally saved images.
+    """
+    from drissionpage_cli import _collect_traffic
+
+    # Identify unmatched image tokens
+    missing = {}   # token → block_id
+    for bid, block in block_map.items():
+        bdata = block["data"]
+        if bdata["type"] != "image":
+            continue
+        img = bdata.get("image") or {}
+        token = img.get("token")
+        if token and token not in token_to_rel:
+            missing[token] = bid
+
+    if not missing:
+        return 0
+
+    # Discover the image download origin from already-captured traffic
+    dl_origin = None
+    for rec in records:
+        rec_url = rec.get("url", "")
+        idx = rec_url.find(_IMG_DL_BASE)
+        if idx > 0:
+            dl_origin = rec_url[:idx]
+            break
+
+    if not dl_origin:
+        # Derive from page URL: li.feishu.cn → internal-api-drive-stream.feishu.cn
+        from urllib.parse import urlparse as _up
+        p = _up(page.url)
+        # feishu.cn or larksuite.com
+        parts = p.netloc.split(".")
+        root = ".".join(parts[-2:]) if len(parts) >= 2 else p.netloc
+        dl_origin = f"https://internal-api-drive-stream.{root}"
+
+    print(f"[feishu2md] {len(missing)} image(s) not in traffic, fetching directly…")
+
+    # Build URLs and trigger fetches via JS
+    urls_js = []
+    for token, bid in missing.items():
+        url = (
+            f"{dl_origin}{_IMG_DL_BASE}{token}/"
+            f"?fallback_source=1&height=1280"
+            f"&mount_node_token={bid}&mount_point=docx_image"
+            f"&policy=equal&width=1280"
+        )
+        urls_js.append(url)
+
+    js_array = json.dumps(urls_js)
+    page.listen.start()
+    page.run_js(
+        f"var urls = {js_array};"
+        "urls.forEach(function(u) {"
+        "  var img = new Image();"
+        "  img.src = u;"
+        "});"
+    )
+    time.sleep(2)
+
+    fetch_dir = tmp_dir / "fetch_imgs"
+    fetch_dir.mkdir(exist_ok=True)
+    fetch_records = _collect_traffic(page, settle=2.0, out_dir=fetch_dir)
+
+    # Match and save
+    img_counter = sum(
+        1 for v in token_to_rel.values()
+        if (v.get("rel") or "").startswith("images/img_")
+    )
+    saved = 0
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    for rec in fetch_records:
+        rec_url = rec.get("url", "")
+        f = rec.get("file")
+        if not f:
+            continue
+        ct = rec.get("content_type", "").lower().split(";")[0].strip()
+        if ct not in _IMG_CT:
+            continue
+
+        for token in list(missing):
+            if token not in rec_url:
+                continue
+            src = fetch_dir / f
+            if not src.exists():
+                continue
+            if token in token_to_rel:
+                continue
+
+            if ct == "image/jpeg":       ext = ".jpg"
+            elif ct == "image/webp":     ext = ".webp"
+            elif ct == "image/gif":      ext = ".gif"
+            elif ct == "image/avif":     ext = ".avif"
+            else:                        ext = ".png"
+
+            img_counter += 1
+            fname = f"img_{img_counter:03d}{ext}"
+            shutil.copy2(src, img_dir / fname)
+            token_to_rel[token] = {"rel": f"images/{fname}", "cover": None}
+            print(f"  [{img_counter:03d}] {fname}  {src.stat().st_size:,}B  ← {rec_url[:70]}")
+            saved += 1
+            break
+
+    still_missing = [t for t in missing if t not in token_to_rel]
+    if still_missing:
+        print(f"  {len(still_missing)} image(s) still could not be fetched")
+
+    return saved
+
+
 def _save_attachments(block_map: dict, records: list, capture_dir: Path,
                       img_dir: Path) -> dict:
     """
@@ -981,6 +1107,14 @@ def convert(page, url: str, out_dir: Path, save_html: bool = False) -> Path:
             block_map, records, tmp_dir, img_dir
         )
         print(f"  {n_img} image(s), {n_cover} cover(s), {n_file} file(s) saved")
+
+        # ── fetch images not loaded by virtualised renderer ──────────────
+        n_fetched = _fetch_missing_images(
+            page, block_map, token_to_rel, records, img_dir, tmp_dir
+        )
+        if n_fetched:
+            n_img += n_fetched
+            print(f"  {n_img} image(s) total after direct fetch")
 
         # ── screenshot whiteboard blocks (绘图/思维导图/流程图/UML图) ──────────
         wb_block_ids = [bid for bid, b in block_map.items()
