@@ -144,6 +144,29 @@ For a fully isolated throwaway session (no persistent state):
 drissionpage-cli open --sandbox
 ```
 
+### Capture mode (full page archive)
+
+```bash
+drissionpage-cli open https://example.com --capture
+```
+
+Creates a timestamped folder `capture-<ts>/` in the current directory containing:
+
+| File | Contents |
+|------|----------|
+| `snapshot.html` | Page HTML at load-complete time |
+| `traffic.json` | Manifest of all requests (url, method, status, content_type, file) |
+| `0001_*.{ext}` … | Every response body saved as an individual file |
+
+Captured file types include: HTML, CSS, JS, JSON, images (jpg, png, webp, gif, svg, avif, bmp, ico), audio (mp3, ogg, wav, aac, flac), and video (mp4, webm, ogv, mov).
+
+```
+[capture] folder   → /project/capture-2026-04-14T16-06-30
+[capture] snapshot → snapshot.html
+[capture] traffic  → traffic.json  (125 requests)
+[capture] media    → 63 files (images/audio/video)
+```
+
 ## Commands
 
 ### Core

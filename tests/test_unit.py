@@ -471,10 +471,11 @@ class TestCliInvocation:
     def test_version_flag(self):
         """--version prints version and exits 0."""
         from tests.conftest import run_cli
+        from importlib.metadata import version
 
         result = run_cli("--version")
         assert result.exit_code == 0
-        assert "0.1.4" in result.output
+        assert version("drissionpage-cli") in result.output
 
     def test_no_command_shows_help(self):
         """No command shows help text."""

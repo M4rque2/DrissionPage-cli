@@ -185,11 +185,40 @@ drissionpage-cli open --profile=/path/to/profile
 # Use a specific CDP port (default: 9222)
 drissionpage-cli open --port=9333
 
+# Capture mode: navigate + save full page archive to a folder in CWD
+drissionpage-cli open https://example.com --capture
+
 # Close the browser
 drissionpage-cli close
 
 # Reset all login state (wipes ~/.drissionpage-cli/profile)
 drissionpage-cli delete-data --reset-profile
+```
+
+### --capture
+
+Creates a timestamped folder `capture-<ts>/` in the current working directory:
+
+```
+capture-2026-04-14T16-06-30/
+  snapshot.html        ← page HTML at load-complete time
+  traffic.json         ← manifest: [{url, method, status, content_type, file}, ...]
+  0001_index.html      ← each network response body as its own file
+  0002_styles.css
+  0004_logo.png
+  0017_hero.jpg
+  0063_promo.mp4
+  ...
+```
+
+Saves all response types: HTML, CSS, JS, JSON, images (jpg/png/webp/gif/svg/avif/bmp/ico), audio (mp3/ogg/wav/aac/flac), video (mp4/webm/ogv/mov).
+
+Output:
+```
+[capture] folder   → /project/capture-2026-04-14T16-06-30
+[capture] snapshot → snapshot.html
+[capture] traffic  → traffic.json  (125 requests)
+[capture] media    → 63 files (images/audio/video)
 ```
 
 ## Snapshots
@@ -283,3 +312,73 @@ drissionpage-cli install --skills
 * **Screenshots and PDF** [references/screenshots-pdf.md](references/screenshots-pdf.md)
 * **Network listening** [references/network-listening.md](references/network-listening.md)
 * **Dual-mode (browser + requests)** [references/dual-mode.md](references/dual-mode.md)
+
+## Feishu → Markdown (`md` command)
+
+```bash
+drissionpage-cli md https://<company>.feishu.cn/docx/<token> [out_dir]
+drissionpage-cli md https://<company>.feishu.cn/wiki/<token> ./output
+drissionpage-cli md https://<company>.feishu.cn/docx/<token> --save-html
+```
+
+Converts a Feishu document to Markdown. Captures full network traffic on page
+load — the complete document block tree is embedded in Feishu's SSR HTML as
+`window.DATA.clientVars.data.block_map`. No scrolling or DOM scraping needed.
+
+Output layout:
+```
+out_dir/
+  Title/
+    Title.md        ← Markdown with local references
+    images/
+      img_001.png   ← document images and file cover thumbnails
+    files/
+      report.pdf    ← file attachments if captured in traffic
+```
+
+### Supported block types
+
+| Block | Feishu name | Markdown output |
+|---|---|---|
+| `heading1`–`heading9` | 标题1–9 | `#`–`######` (H7–H9 map to H6) |
+| `text` | 正文 | paragraph |
+| `bullet` | 无序列表 | `- item` |
+| `ordered` | 有序列表 | `1. item` |
+| `todo` | 任务列表 | `- [ ] item` / `- [x] item` |
+| `code` | 代码块 | fenced ` ``` ` block |
+| `quote_container` | 引用块 | `> blockquote` |
+| `callout` | 高亮块 | `> highlighted text` |
+| `divider` | 分隔线 | `---` |
+| `image` | 图片 | `![alt](images/img_NNN.ext)` — saved locally |
+| `file` | 文件 | `> 📎 [name](files/name)` if captured; metadata + cover thumbnail if not |
+| `table` | 表格 | GFM pipe table |
+| `grid` / `grid_column` | 分栏 | columns rendered inline (no visual columns) |
+| `bookmark` | 链接 | `[title](url)` inline link |
+| `synced_source` | 同步块 | content rendered inline (same as regular blocks) |
+| `whiteboard` | 绘图/思维导图/流程图/UML图 | `![diagram](images/whiteboard_NNN.png)` — screenshot of rendered canvas |
+| `page` | 子页面引用 | `> 📄 title` |
+
+### Inline formatting
+
+**bold**, *italic*, ***bold italic***, `code`, ~~strikethrough~~, [links](url) — all decoded from Quill/Etherpad attributed text.
+
+### Known limitations
+
+| Block | Feishu name | Reason |
+|---|---|---|
+| `whiteboard` | 绘图/思维导图/流程图/UML | Screenshotted via live browser (WASM renderer). Fallback `> 🎨 [not captured]` if the element was not rendered (empty whiteboard or scroll timing). |
+| `equation` / `formula` | 公式 | LaTeX math; not yet implemented |
+| `button` | 按钮 | Interactive UI element; no text equivalent |
+| `comment` | 评论/划线 | Annotation layer; not in block_map |
+| Old DOC format | `wikcn…` wiki URLs | Different flat-text structure; not supported |
+| Large docs (>239 blocks) | — | Feishu SSR caps initial payload; truncation warning added |
+
+### File attachments
+
+Files in traffic are saved to `files/`. Cover thumbnails (PNG previews) are
+always captured and shown as inline images. The actual file is only captured
+if the browser downloaded it (small files may be auto-fetched; large PDFs usually are not).
+
+Options:
+- `out_dir` — output directory (default: `.`)
+- `--save-html` — also save the raw SSR HTML alongside the Markdown

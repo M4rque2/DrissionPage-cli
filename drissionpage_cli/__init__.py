@@ -9,11 +9,13 @@ Designed for token-efficient browser automation by coding agents.
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import urlparse
 
 from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PackageNotFoundError
 try:
@@ -189,7 +191,7 @@ def _get_page(session_name, create=False, options=None):
     return page
 
 
-def _format_snapshot(page, element=None):
+def _format_snapshot(page, element=None, save=True):
     """Produce a text snapshot of the current page state, similar to playwright-cli's snapshot."""
     lines = []
     lines.append("### Page")
@@ -206,18 +208,177 @@ def _format_snapshot(page, element=None):
                 lines.append(f"  @{k}={v}")
     else:
         lines.append("### Snapshot")
-        # Save snapshot to file
-        timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
-        snap_dir = CLI_DIR / "snapshots"
-        snap_dir.mkdir(parents=True, exist_ok=True)
-        snap_file = snap_dir / f"page-{timestamp}.html"
-        try:
-            snap_file.write_text(page.html)
-            lines.append(f"[Snapshot]({snap_file})")
-        except Exception:
-            lines.append("[Snapshot could not be saved]")
+        if save:
+            timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
+            snap_file = Path.cwd() / f"page-{timestamp}.html"
+            try:
+                snap_file.write_text(page.html, encoding="utf-8")
+                lines.append(f"[Snapshot]({snap_file})")
+            except Exception:
+                lines.append(f"- HTML length: {len(page.html):,} chars")
+        else:
+            lines.append(f"- HTML length: {len(page.html):,} chars")
 
     return "\n".join(lines)
+
+
+def _ct_to_ext(ct: str) -> str:
+    """Map a Content-Type value to a file extension."""
+    ct = ct.lower().split(";")[0].strip()
+    return {
+        "text/html":                "html",
+        "text/plain":               "txt",
+        "text/css":                 "css",
+        "text/javascript":          "js",
+        "application/javascript":   "js",
+        "application/x-javascript":"js",
+        "application/json":         "json",
+        "application/xml":          "xml",
+        "text/xml":                 "xml",
+        "image/png":                "png",
+        "image/jpeg":               "jpg",
+        "image/webp":               "webp",
+        "image/gif":                "gif",
+        "image/svg+xml":            "svg",
+        "image/avif":               "avif",
+        "image/bmp":                "bmp",
+        "image/x-icon":             "ico",
+        "image/vnd.microsoft.icon": "ico",
+        "audio/mpeg":               "mp3",
+        "audio/mp3":                "mp3",
+        "audio/ogg":                "ogg",
+        "audio/wav":                "wav",
+        "audio/x-wav":              "wav",
+        "audio/webm":               "webm",
+        "audio/aac":                "aac",
+        "audio/flac":               "flac",
+        "audio/x-flac":             "flac",
+        "video/mp4":                "mp4",
+        "video/webm":               "webm",
+        "video/ogg":                "ogv",
+        "video/x-msvideo":          "avi",
+        "video/quicktime":          "mov",
+        "application/pdf":          "pdf",
+        "font/woff":                "woff",
+        "font/woff2":               "woff2",
+        "application/font-woff":    "woff",
+        "application/font-woff2":   "woff2",
+        "application/octet-stream": "bin",
+    }.get(ct, "bin")
+
+
+def _response_filename(counter: int, url: str, ct: str) -> str:
+    """Build a short, readable filename for a captured response."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    # Use last non-empty path segment, falling back to hostname
+    segments = [s for s in parsed.path.split("/") if s]
+    name = segments[-1] if segments else parsed.netloc
+    # Strip existing extension so we control it via content-type
+    name = re.sub(r"\.[^.]{1,6}$", "", name)
+    # Sanitize: keep alphanum, dot, hyphen; collapse everything else to _
+    name = re.sub(r"[^\w.\-]", "_", name)[:50].strip("_") or "response"
+    ext = _ct_to_ext(ct)
+    return f"{counter:04d}_{name}.{ext}"
+
+
+def _collect_traffic(page, settle: float = 1.0, out_dir: Path = None) -> list:
+    """
+    Drain the network listener queue started before page.get().
+
+    Call after page.get() returns.  ``settle`` gives async XHR/fetch calls
+    a moment to complete before we declare the queue exhausted.
+
+    If ``out_dir`` is given every response body is written as an individual
+    file inside that directory and each record gets a ``"file"`` field with
+    the relative filename.
+
+    Returns a list of dicts (the traffic manifest), one per request/response.
+    """
+    _TEXT_TYPES = (
+        "text/", "application/json", "application/javascript",
+        "application/xml", "application/x-www-form-urlencoded",
+    )
+
+    time.sleep(settle)   # let in-flight async requests finish
+    records = []
+    counter = 0
+
+    for packet in page.listen.steps(timeout=2):
+        url = getattr(packet, "url", "") or ""
+
+        # Only keep real HTTP(S) traffic — skip chrome://, data:, etc.
+        if not url.startswith(("http://", "https://")):
+            continue
+
+        counter += 1
+        resp   = getattr(packet, "response", None)
+        method = getattr(packet, "method", "GET") or "GET"
+        status = getattr(resp, "status", None) if resp else None
+
+        ct = ""
+        try:
+            ct = (resp.headers.get("content-type") or "") if resp else ""
+        except Exception:
+            pass
+
+        rec = {"url": url, "method": method, "status": status, "content_type": ct}
+
+        # Request headers
+        try:
+            req = getattr(packet, "request", None)
+            if req and getattr(req, "headers", None):
+                rec["request_headers"] = dict(req.headers)
+        except Exception:
+            pass
+
+        # Request body (POST etc.)
+        try:
+            req = getattr(packet, "request", None)
+            post = getattr(req, "postData", None) or getattr(req, "body", None) if req else None
+            if post:
+                rec["request_body"] = post if isinstance(post, str) else post.decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+        # Response headers
+        try:
+            if resp and getattr(resp, "headers", None):
+                rec["response_headers"] = dict(resp.headers)
+        except Exception:
+            pass
+
+        # Response body
+        body = getattr(resp, "body", None) if resp else None
+        if body is not None:
+            if isinstance(body, (bytes, bytearray)):
+                data: bytes = bytes(body)
+            elif isinstance(body, str):
+                data = body.encode("utf-8", errors="replace")
+            elif isinstance(body, (dict, list)):
+                # DrissionPage auto-parses JSON responses into Python objects
+                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            else:
+                data = str(body).encode("utf-8", errors="replace")
+            rec["size"] = len(data)
+
+            if out_dir is not None:
+                # Save every response as its own file
+                fname = _response_filename(counter, url, ct)
+                try:
+                    (out_dir / fname).write_bytes(data)
+                    rec["file"] = fname
+                except Exception as e:
+                    rec["file_error"] = str(e)
+            else:
+                # Inline text bodies only (no out_dir → old compact behaviour)
+                is_text = any(t in ct.lower() for t in _TEXT_TYPES)
+                if is_text:
+                    rec["body"] = data.decode("utf-8", errors="replace")
+
+        records.append(rec)
+
+    return records
 
 
 def _find_element(page, ref):
@@ -271,11 +432,60 @@ def cmd_open(args):
     page = _get_page(session, create=True, options=options)
 
     url = getattr(args, "url", None)
+    capture = getattr(args, "capture", False)
+
+    _MEDIA_EXTS = {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".bmp", ".ico",
+        ".mp3", ".mp4", ".ogg", ".ogv", ".wav", ".webm", ".aac", ".flac", ".avi", ".mov",
+    }
+
     if url:
+        if capture:
+            # Start listening BEFORE navigation so no packet is missed
+            page.listen.start()
+
         page.get(url)
 
+        if capture:
+            timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
+            capture_dir = Path.cwd() / f"capture-{timestamp}"
+            capture_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save page snapshot HTML
+            html_file = capture_dir / "snapshot.html"
+            try:
+                html_file.write_text(page.html, encoding="utf-8")
+            except Exception as e:
+                print(f"[warn] could not save snapshot HTML: {e}", file=sys.stderr)
+
+            # Drain listener; each response body is written as its own file
+            records = _collect_traffic(page, out_dir=capture_dir)
+
+            # Save traffic manifest
+            traffic_file = capture_dir / "traffic.json"
+            try:
+                traffic_file.write_text(
+                    json.dumps(records, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                print(f"[warn] could not save traffic manifest: {e}", file=sys.stderr)
+
+            n_media = sum(
+                1 for r in records
+                if r.get("file") and Path(r["file"]).suffix.lower() in _MEDIA_EXTS
+            )
+            print(f"[capture] folder   → {capture_dir}")
+            print(f"[capture] snapshot → snapshot.html")
+            print(f"[capture] traffic  → traffic.json  ({len(records)} requests)")
+            if n_media:
+                print(f"[capture] media    → {n_media} files (images/audio/video)")
+    else:
+        if capture:
+            print("[warn] --capture requires a URL to be useful; listener not started.", file=sys.stderr)
+
     _inject_console_capture(page)
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not capture))
 
 
 def cmd_goto(args):
@@ -1175,6 +1385,38 @@ def cmd_state_load(args):
 # --- Install skills ---
 
 
+def cmd_md(args):
+    """Convert a Feishu document to Markdown with locally saved images."""
+    from drissionpage_cli._feishu import convert
+
+    url = args.url
+    parsed = urlparse(url)
+    is_feishu = (
+        parsed.netloc.endswith(".feishu.cn")
+        and ("/wiki/" in parsed.path or "/docx/" in parsed.path)
+    )
+    if not is_feishu:
+        print(f"Error: '{url}' is not a supported Feishu document.", file=sys.stderr)
+        print("Supported: https://<company>.feishu.cn/wiki/<id>  or  /docx/<id>", file=sys.stderr)
+        sys.exit(1)
+
+    session = _get_session_name(args)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        page = _get_page(session)
+    except RuntimeError:
+        page = _get_page(session, create=True, options={"headless": False})
+
+    convert(
+        page,
+        url=url,
+        out_dir=out_dir,
+        save_html=getattr(args, "save_html", False),
+    )
+
+
 def cmd_install(args):
     """Install skills for Claude Code or other agents."""
     if not getattr(args, "skills", False):
@@ -1231,6 +1473,9 @@ def build_parser():
     p.add_argument("--sandbox", action="store_true",
                    help="Isolated session: random port + temporary profile, no persistent state")
     p.add_argument("--port", type=int, help=f"CDP debugging port (default: {DEFAULT_PORT})")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture full network traffic during page load; saves paired "
+                        "page-<ts>.html and page-<ts>.traffic.json to the snapshots dir")
     p.set_defaults(func=cmd_open)
 
     # goto
@@ -1506,6 +1751,13 @@ def build_parser():
     p = subparsers.add_parser("install", help="Install skills or dependencies")
     p.add_argument("--skills", action="store_true", help="Install Claude Code skills")
     p.set_defaults(func=cmd_install)
+
+    # md - Convert Feishu document to Markdown with locally saved images
+    p = subparsers.add_parser("md", help="Convert a Feishu document to Markdown")
+    p.add_argument("url", help="Feishu document URL (*.feishu.cn/wiki/* or /docx/*)")
+    p.add_argument("out_dir", nargs="?", default=".", help="Output directory (default: .)")
+    p.add_argument("--save-html", action="store_true", help="Also save the raw SSR HTML")
+    p.set_defaults(func=cmd_md)
 
     return parser
 
