@@ -82,6 +82,19 @@ _ATTACH_CT = _IMG_CT | frozenset([
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
+_B36 = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+def _int_to_base36(n: int) -> str:
+    """Convert a non-negative integer to a base-36 string (Etherpad encoding)."""
+    if n == 0:
+        return "0"
+    digits = []
+    while n:
+        digits.append(_B36[n % 36])
+        n //= 36
+    return "".join(reversed(digits))
+
+
 def _strip_zero_width(text: str) -> str:
     return _INVISIBLE_RE.sub("", text)
 
@@ -114,17 +127,10 @@ def _extract_block_map(ssr_html: str) -> tuple:
     Returns (block_map: dict, title: str).
     block_map is empty if not found.
     """
-    # Detect old-format "DOC" (wikcn prefix) — uses a completely different structure
-    if '"type":"DOC"' in ssr_html or '"type": "DOC"' in ssr_html:
-        # Best-effort title extraction from old format
-        m = re.search(r'window\.SERVER_DATA\s*=\s*Object\(\{"meta":\{"title":"([^"]+)"', ssr_html)
-        title = _strip_zero_width(m.group(1)) if m else ""
-        raise RuntimeError(
-            "This document uses the old Feishu 'DOC' format (wikcn… URL prefix), "
-            "which stores content differently from the modern 'docx' block format. "
-            "Old-format DOC conversion is not yet supported. "
-            f"Document: {title or '(unknown)'}"
-        )
+    # Old-format DOC is now handled by convert() before calling this function,
+    # but guard here as well in case _extract_block_map is called directly.
+    if _is_old_doc(ssr_html):
+        return {}, ""
 
     # There are two clientVars occurrences; we want the one with block_map data.
     idx = ssr_html.find('clientVars: Object({"data":{"block_map":')
@@ -160,12 +166,219 @@ def _extract_block_map(ssr_html: str) -> tuple:
     return block_map, _strip_zero_width(title)
 
 
+# ── old-format DOC (wikcn / "type":"DOC") ─────────────────────────────────────
+
+def _is_old_doc(ssr_html: str) -> bool:
+    """Return True if the SSR HTML is for an old-format Feishu DOC."""
+    return '"type":"DOC"' in ssr_html or '"type": "DOC"' in ssr_html
+
+
+def _extract_old_doc_data(ssr_html: str) -> tuple:
+    """
+    Extract Etherpad-format document data from old-format Feishu DOC SSR HTML.
+
+    Old DOCs store content as a single attributed text string (Etherpad OT
+    format) rather than the modern block_map.  The data lives in::
+
+        window.DATA.clientVars.data.collab_client_vars
+
+    Returns ``(title, text, attribs_str, nta_b36, resources)`` where
+    *nta_b36* is the ``numToAttrib`` dict re-keyed with base-36 strings
+    so it can be fed directly to :func:`_parse_attribs`.
+    """
+    idx = ssr_html.find('clientVars: Object({"type":"DOC"')
+    if idx < 0:
+        idx = ssr_html.find('clientVars: Object({"type": "DOC"')
+    if idx < 0:
+        raise RuntimeError("Could not locate old-format DOC clientVars in SSR HTML")
+
+    obj_start = ssr_html.find("Object(", idx) + len("Object(")
+    depth = 0
+    obj_end = obj_start
+    for i, c in enumerate(ssr_html[obj_start:], obj_start):
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                obj_end = i + 1
+                break
+
+    data = json.loads(ssr_html[obj_start:obj_end])
+    ccv = data.get("data", {}).get("collab_client_vars", {})
+
+    iat = ccv.get("initialAttributedText", {})
+    text = iat.get("text", "")
+    attribs_str = iat.get("attribs", "")
+    nta = (ccv.get("apool") or {}).get("numToAttrib") or {}
+    resources = ccv.get("resources") or {}
+
+    # Re-key numToAttrib: Feishu stores decimal string keys ("10", "11", …)
+    # but attribs references them as base-36 ("a", "b", …).
+    nta_b36 = {}
+    for k, v in nta.items():
+        try:
+            nta_b36[_int_to_base36(int(k))] = v
+        except (ValueError, TypeError):
+            nta_b36[k] = v
+
+    # Title: prefer SERVER_DATA meta, fall back to ccv.title
+    m = re.search(
+        r'window\.SERVER_DATA\s*=\s*Object\(\{"meta":\{"title":"([^"]+)"',
+        ssr_html,
+    )
+    title = _strip_zero_width(m.group(1)) if m else ccv.get("title", "")
+
+    return title, text, attribs_str, nta_b36, resources
+
+
+def _old_doc_to_markdown(
+    text: str,
+    attribs_str: str,
+    nta_b36: dict,
+    resources: dict,
+) -> str:
+    """
+    Convert old-format Feishu DOC Etherpad data to Markdown.
+
+    Handles headings (h1-h9), numbered/bulleted lists, inline links
+    (``url-*`` and ``mention-link_*``), and embedded block placeholders
+    (mind-notes, etc.).
+    """
+    segments = _parse_attribs(attribs_str, nta_b36)
+
+    # ── walk segments and split into lines ────────────────────────────────
+    # Each line: (line_attrs from its lmkr segment, [(text, inline_attrs)…])
+    lines: list[tuple[dict, list]] = []
+    cur_attrs: dict = {}
+    cur_spans: list = []
+    pos = 0
+
+    for count, attrs in segments:
+        chunk = text[pos : pos + count]
+        pos += count
+        if not chunk:
+            continue
+
+        # Line-marker character (*) — carries line-level attrs, skip the char
+        if attrs.get("lmkr"):
+            cur_attrs = dict(attrs)
+            continue
+
+        # Split at embedded newlines
+        while "\n" in chunk:
+            nl = chunk.index("\n")
+            before = chunk[:nl]
+            if before:
+                cur_spans.append((before, attrs))
+            lines.append((dict(cur_attrs), list(cur_spans)))
+            cur_attrs = {}
+            cur_spans = []
+            chunk = chunk[nl + 1 :]
+
+        if chunk:
+            cur_spans.append((chunk, attrs))
+
+    if cur_spans:
+        lines.append((dict(cur_attrs), list(cur_spans)))
+
+    # ── render each line to Markdown ──────────────────────────────────────
+    md_parts: list[str] = []
+
+    for line_attrs, spans in lines:
+        heading = line_attrs.get("heading", "")
+        list_type = line_attrs.get("list", "")
+        start_num = line_attrs.get("start", "1")
+
+        inline = _render_old_doc_spans(spans)
+
+        # Blank line
+        if not inline.strip():
+            # Collapse consecutive blanks
+            if not md_parts or md_parts[-1] != "":
+                md_parts.append("")
+            continue
+
+        # Line-level prefix (heading wins over list)
+        if heading:
+            lvl = int(heading[1:]) if heading[1:].isdigit() else 1
+            md_parts.append("#" * min(lvl, 6) + " " + inline)
+        elif list_type.startswith("number"):
+            depth = int(list_type[-1]) - 1 if list_type[-1].isdigit() else 0
+            md_parts.append("   " * depth + f"{start_num}. " + inline)
+        elif list_type.startswith("indent") or list_type.startswith("bullet"):
+            depth = int(list_type[-1]) - 1 if list_type[-1].isdigit() else 0
+            md_parts.append("   " * depth + "- " + inline)
+        else:
+            md_parts.append(inline)
+
+    return "\n".join(md_parts)
+
+
+def _render_old_doc_spans(spans: list) -> str:
+    """Render a list of ``(text, attrs)`` spans to inline Markdown."""
+    parts: list[str] = []
+
+    for raw_text, attrs in spans:
+        chunk = raw_text
+
+        # ── embedded block placeholder (mindnote / diagram) ───────────
+        meta_json = attrs.get("dataMetaBlockProps")
+        if meta_json:
+            try:
+                meta = json.loads(meta_json)
+                engine = meta.get("engineType", "block")
+                token = meta.get("token", "")
+                chunk = f"*[Embedded {engine}: {token}]*"
+            except (json.JSONDecodeError, TypeError):
+                chunk = "*[embedded block]*"
+            parts.append(chunk)
+            continue
+
+        # ── find link URL ─────────────────────────────────────────────
+        link_url = None
+        for k, v in attrs.items():
+            if k.startswith("url-"):
+                link_url = _url_unquote(v)
+                break
+            if k.startswith("mention-link_"):
+                link_url = _url_unquote(k[len("mention-link_") :])
+                break
+
+        # ── inline formatting ─────────────────────────────────────────
+        bold = attrs.get("bold") == "true"
+        italic = attrs.get("italic") == "true"
+        code = attrs.get("code") == "true"
+        strike = attrs.get("strikethrough") == "true"
+
+        if code:
+            chunk = f"`{chunk}`"
+        elif bold and italic:
+            chunk = f"***{chunk}***"
+        elif bold:
+            chunk = f"**{chunk}**"
+        elif italic:
+            chunk = f"*{chunk}*"
+
+        if strike:
+            chunk = f"~~{chunk}~~"
+
+        if link_url:
+            chunk = f"[{chunk}]({link_url})"
+
+        parts.append(chunk)
+
+    return "".join(parts)
+
+
 # ── attributed text (Etherpad/Changeset format) ────────────────────────────────
 
 def _parse_attribs(attribs_str: str, num_to_attrib: dict) -> list:
     """
     Parse an Etherpad changeset attrib string into segments.
     Counts are base-36 encoded (e.g. '+h' = 17 chars, '+11' = 37 chars).
+    ``|L`` before ``+N`` means "N chars include L newlines" — we skip the L
+    since the newlines are already in the text.
     Returns list of (char_count, {attr_key: attr_value}).
     """
     segments = []
@@ -176,16 +389,22 @@ def _parse_attribs(attribs_str: str, num_to_attrib: dict) -> list:
         if c == "*":
             i += 1
             j = i
-            while j < len(attribs_str) and attribs_str[j] not in "+*":
+            while j < len(attribs_str) and attribs_str[j] not in "+*|":
                 j += 1
             pair = num_to_attrib.get(attribs_str[i:j])
             if pair and len(pair) == 2 and pair[1] not in ("", "false", None):
                 current_attrs[pair[0]] = pair[1]
             i = j
+        elif c == "|":
+            # |L prefix: skip the newline count L; the following +N has the
+            # total character count we need.
+            i += 1
+            while i < len(attribs_str) and attribs_str[i] not in "+*|":
+                i += 1
         elif c == "+":
             i += 1
             j = i
-            while j < len(attribs_str) and attribs_str[j] not in "+*":
+            while j < len(attribs_str) and attribs_str[j] not in "+*|":
                 j += 1
             raw = attribs_str[i:j]
             count = int(raw, 36) if raw else 0
@@ -974,6 +1193,40 @@ def convert(page, url: str, out_dir: Path, save_html: bool = False) -> Path:
                 "Could not find the Feishu SSR HTML in network traffic.\n"
                 "Make sure you are logged in and the document is accessible."
             )
+
+        # ── old-format DOC: completely different conversion path ────────────
+        if _is_old_doc(ssr_html):
+            print("[feishu2md] old-format DOC detected, using legacy converter…")
+            title, doc_text, doc_attribs, doc_nta, doc_res = (
+                _extract_old_doc_data(ssr_html)
+            )
+            safe = _safe_title(title)
+            print(f"[feishu2md] document: {title}")
+
+            doc_dir = out_dir / safe
+            doc_dir.mkdir(parents=True, exist_ok=True)
+
+            body = _old_doc_to_markdown(doc_text, doc_attribs, doc_nta, doc_res)
+
+            # Skip the first line of the body if it duplicates the title
+            body_lines = body.split("\n")
+            if body_lines and body_lines[0].strip() == title.strip():
+                body = "\n".join(body_lines[1:]).lstrip("\n")
+
+            md = f"# {_strip_zero_width(title)}\n\n{body}"
+            md = re.sub(r"\n{3,}", "\n\n", md)
+            print(f"  {len(md):,} chars")
+
+            md_path = doc_dir / f"{safe}.md"
+            md_path.write_text(md, encoding="utf-8")
+            print(f"[feishu2md] done  → {md_path}")
+
+            if save_html:
+                html_path = doc_dir / f"{safe}_ssr.html"
+                shutil.copy2(tmp_dir / ssr_file, html_path)
+                print(f"[feishu2md] html  → {html_path}")
+
+            return md_path
 
         # ── extract block_map ─────────────────────────────────────────────────
         print("[feishu2md] extracting block map…")
