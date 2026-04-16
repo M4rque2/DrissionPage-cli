@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drissionpage-cli"
-version = "0.1.6"
+version = "0.1.7"
 description = "DrissionPage CLI - Token-efficient browser automation for coding agents"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -32,6 +32,7 @@ dependencies = [
 
 [project.scripts]
 drissionpage-cli = "drissionpage_cli:main"
+dp-cli = "drissionpage_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/nicekate/DrissionPage-MCP"

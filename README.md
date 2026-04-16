@@ -49,12 +49,14 @@ cd DrissionPage-MCP/DrissionPage-cli
 pip install -e .
 ```
 
-After installation the `drissionpage-cli` command is available globally:
+After installation both `drissionpage-cli` and the shortcut `dp-cli` are available globally:
 
 ```bash
-drissionpage-cli --version
-drissionpage-cli --help
+dp-cli --version
+dp-cli --help
 ```
+
+`dp-cli` and `drissionpage-cli` are identical — use whichever you prefer.
 
 ### Install skills for Claude Code
 
