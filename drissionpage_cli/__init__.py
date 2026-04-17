@@ -24,6 +24,10 @@ try:
 except _PackageNotFoundError:
     __version__ = "unknown"
 
+# Apply runtime patches for Chrome compatibility before any DrissionPage usage.
+from drissionpage_cli._compat import apply_patches as _apply_patches
+_apply_patches()
+
 # Session storage directory — home-based so profile and state persist across
 # different working directories.
 CLI_DIR = Path(os.environ.get("DRISSIONPAGE_CLI_DIR", str(Path.home() / ".drissionpage-cli")))
@@ -159,21 +163,13 @@ def _cli_profile_path(browser_path=None):
 
 
 def _apply_chrome146_fix(page):
-    """Work around Chrome 146+ virtual headless screen change.
+    """No-op. Kept for call-site compatibility.
 
-    Chrome 135+ (Linux) / 136+ (Windows) / 138+ (macOS) switched headless mode
-    to a virtual screen (800x600, DPR 1.0) instead of using host display params.
-    Explicitly setting deviceScaleFactor=1 avoids rendering issues and a known
-    captureScreenshot hang when deviceScaleFactor is 0 (the "use default" value).
-    See: https://issues.chromium.org/issues/422318935
+    The Chrome 147+ viewport fix is now handled by the monkey-patch in
+    ``_compat.py`` which filters out ``chrome://newtab-footer/`` during
+    target selection, applied at import time.
     """
-    try:
-        page._run_cdp(
-            'Emulation.setDeviceMetricsOverride',
-            width=0, height=0, deviceScaleFactor=1, mobile=False,
-        )
-    except Exception:
-        pass
+    pass
 
 
 def _get_page(session_name, create=False, options=None):
