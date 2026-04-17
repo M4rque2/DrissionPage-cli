@@ -119,7 +119,7 @@ def _kill_session(sessions, session_name):
         try:
             os.kill(pid, signal.SIGTERM)
             time.sleep(0.5)
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
     del sessions[session_name]
     _save_sessions(sessions)
