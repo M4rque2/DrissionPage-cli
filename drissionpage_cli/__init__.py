@@ -80,6 +80,24 @@ def _cli_profile_path():
     return CLI_DIR / "profile"
 
 
+def _apply_chrome146_fix(page):
+    """Work around Chrome 146+ virtual headless screen change.
+
+    Chrome 135+ (Linux) / 136+ (Windows) / 138+ (macOS) switched headless mode
+    to a virtual screen (800x600, DPR 1.0) instead of using host display params.
+    Explicitly setting deviceScaleFactor=1 avoids rendering issues and a known
+    captureScreenshot hang when deviceScaleFactor is 0 (the "use default" value).
+    See: https://issues.chromium.org/issues/422318935
+    """
+    try:
+        page._run_cdp(
+            'Emulation.setDeviceMetricsOverride',
+            width=0, height=0, deviceScaleFactor=1, mobile=False,
+        )
+    except Exception:
+        pass
+
+
 def _get_page(session_name, create=False, options=None):
     """Get or create a ChromiumPage for the given session.
 
@@ -104,6 +122,7 @@ def _get_page(session_name, create=False, options=None):
             co.headless(info.get("headless", False))
             try:
                 page = ChromiumPage(addr_or_opts=co)
+                _apply_chrome146_fix(page)
                 if not create:
                     return page
                 # create=True but session is alive — close old one first
@@ -178,6 +197,7 @@ def _get_page(session_name, create=False, options=None):
                 co.set_argument(arg)
 
     page = ChromiumPage(addr_or_opts=co)
+    _apply_chrome146_fix(page)
 
     # Record session info
     sessions[session_name] = {
