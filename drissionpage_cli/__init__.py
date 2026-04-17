@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 import time
@@ -30,6 +31,55 @@ SESSIONS_FILE = CLI_DIR / "sessions.json"
 
 # Default CDP port — drissionpage-cli owns this port exclusively
 DEFAULT_PORT = int(os.environ.get("DRISSIONPAGE_CLI_PORT", "9222"))
+
+_BROWSER_CANDIDATES = {
+    "chrome": [
+        "google-chrome-stable",
+        "google-chrome",
+        "chrome",
+    ],
+    "chromium": [
+        "chromium-browser",
+        "chromium",
+    ],
+    "edge": [
+        "microsoft-edge-stable",
+        "microsoft-edge",
+        "msedge",
+    ],
+}
+
+_BROWSER_SEARCH_ORDER = ["chrome", "chromium", "edge"]
+
+
+def _find_browser_path(browser=None):
+    """Return the path to a Chromium-family binary.
+
+    *browser* can be ``"chrome"``, ``"chromium"``, or ``"edge"``.
+    When *None*, tries all families in order and returns the first hit.
+    """
+    if browser:
+        key = browser.lower()
+        candidates = _BROWSER_CANDIDATES.get(key)
+        if not candidates:
+            raise RuntimeError(
+                f"Unknown browser '{browser}'. "
+                f"Choose from: {', '.join(_BROWSER_CANDIDATES)}"
+            )
+        for name in candidates:
+            p = shutil.which(name)
+            if p:
+                return p
+        raise RuntimeError(
+            f"Browser '{browser}' not found on PATH. "
+            f"Looked for: {', '.join(candidates)}"
+        )
+    for key in _BROWSER_SEARCH_ORDER:
+        for name in _BROWSER_CANDIDATES[key]:
+            p = shutil.which(name)
+            if p:
+                return p
+    return None
 
 
 def ensure_cli_dir():
@@ -75,8 +125,36 @@ def _kill_session(sessions, session_name):
     _save_sessions(sessions)
 
 
-def _cli_profile_path():
-    """Return the persistent Chrome profile directory managed by drissionpage-cli."""
+def _snap_name(path):
+    """Return the snap package name if *path* is a snap binary, else None.
+
+    Snap binaries live under ``/snap/bin/<name>`` (symlink to ``/usr/bin/snap``)
+    or ``/snap/<name>/...``.  We check the original path (not resolved) because
+    resolve() follows the symlink to ``/usr/bin/snap``.
+    """
+    if not path:
+        return None
+    p = str(Path(path))
+    # /snap/bin/<name>
+    if p.startswith("/snap/bin/"):
+        return Path(p).name
+    # /snap/<name>/current/... or /snap/<name>/<rev>/...
+    parts = Path(p).parts
+    if len(parts) >= 3 and parts[1] == "snap" and parts[2] != "bin":
+        return parts[2]
+    return None
+
+
+def _cli_profile_path(browser_path=None):
+    """Return the persistent profile directory managed by drissionpage-cli.
+
+    Snap-packaged browsers cannot write to arbitrary home-directory paths due
+    to AppArmor confinement, so we use ``~/snap/<name>/common/drissionpage-cli``
+    instead.
+    """
+    name = _snap_name(browser_path)
+    if name:
+        return Path.home() / "snap" / name / "common" / "drissionpage-cli"
     return CLI_DIR / "profile"
 
 
@@ -160,14 +238,25 @@ def _get_page(session_name, create=False, options=None):
     explicit_port = options and options.get("port")
     is_headless = options.get("headless", False) if options else False
 
+    # Resolve browser binary first — profile path depends on whether it's a
+    # snap package (AppArmor confinement restricts writable paths).
+    browser_path = (options and options.get("browser_path")) or None
+    if not browser_path:
+        browser_path = _find_browser_path(
+            options.get("browser") if options else None
+        )
+
     co = ChromiumOptions()
+
+    if browser_path:
+        co.set_browser_path(browser_path)
 
     if sandbox:
         # Isolated profile: random port + temporary user data dir managed by DrissionPage.
         # State is not persisted — the temp dir is cleaned up when Chrome exits.
         co.auto_port()
     else:
-        # Persistent profile: fixed port + CLI-managed profile at ~/.drissionpage-cli/profile.
+        # Persistent profile: fixed port + CLI-managed profile.
         # Works in both headed and headless mode — Chrome 136+ only blocks remote debugging
         # on the OS-default profile path, not on custom paths.
         port = explicit_port or DEFAULT_PORT
@@ -179,15 +268,16 @@ def _get_page(session_name, create=False, options=None):
             )
         co.set_local_port(port)
 
-        profile_path = (options and options.get("user_data_path")) or str(_cli_profile_path())
-        _cli_profile_path().mkdir(parents=True, exist_ok=True)
+        if options and options.get("user_data_path"):
+            profile_path = options["user_data_path"]
+        else:
+            profile_path = str(_cli_profile_path(browser_path))
+        Path(profile_path).mkdir(parents=True, exist_ok=True)
         co.set_user_data_path(profile_path)
 
     if options:
         if options.get("headless") is not None:
             co.headless(options["headless"])
-        if options.get("browser_path"):
-            co.set_browser_path(options["browser_path"])
         if options.get("proxy"):
             co.set_proxy(options["proxy"])
         if options.get("user_agent"):
@@ -448,6 +538,7 @@ def cmd_open(args):
         "user_data_path": getattr(args, "profile", None),
         "port": getattr(args, "port", None),
         "sandbox": getattr(args, "sandbox", False),
+        "browser": getattr(args, "browser", None),
     }
     page = _get_page(session, create=True, options=options)
 
@@ -1496,6 +1587,8 @@ def build_parser():
     p.add_argument("--capture", action="store_true",
                    help="Capture full network traffic during page load; saves paired "
                         "page-<ts>.html and page-<ts>.traffic.json to the snapshots dir")
+    p.add_argument("--browser", choices=["chrome", "chromium", "edge"],
+                   help="Browser to use (default: auto-detect)")
     p.set_defaults(func=cmd_open)
 
     # goto
