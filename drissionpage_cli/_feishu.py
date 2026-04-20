@@ -173,6 +173,38 @@ def _is_old_doc(ssr_html: str) -> bool:
     return '"type":"DOC"' in ssr_html or '"type": "DOC"' in ssr_html
 
 
+def _extract_doc_meta(page) -> dict:
+    """Read author(s) and last-modified date visible below the document title.
+
+    Returns {"authors": [str, ...], "last_modified": str|None}.
+    """
+    meta: dict = {"authors": [], "last_modified": None}
+    try:
+        meta["authors"] = [
+            e.text.strip()
+            for e in page.eles("css:.docs-info-avatar-name-text")
+            if e.text and e.text.strip()
+        ]
+        time_el = page.ele("css:.doc-info-time-item", timeout=2)
+        if time_el and time_el.text:
+            meta["last_modified"] = time_el.text.replace("修改", "").strip()
+    except Exception as e:
+        print(f"[feishu2md] note: could not extract doc metadata: {e}")
+    return meta
+
+
+def _format_meta_line(meta: dict) -> str:
+    """Format author/date metadata as a Markdown line to insert below the title."""
+    parts = []
+    if meta.get("authors"):
+        parts.append(f"**Author**: {', '.join(meta['authors'])}")
+    if meta.get("last_modified"):
+        parts.append(f"**Last Modified**: {meta['last_modified']}")
+    if not parts:
+        return ""
+    return "> " + " | ".join(parts) + "\n\n"
+
+
 def _extract_old_doc_data(ssr_html: str) -> tuple:
     """
     Extract Etherpad-format document data from old-format Feishu DOC SSR HTML.
@@ -1165,6 +1197,12 @@ def convert(page, url: str, out_dir: Path, save_html: bool = False) -> Path:
         page.get(url)
         time.sleep(3)   # let JS render + async requests fire
 
+        print("[feishu2md] extracting document metadata…")
+        doc_meta = _extract_doc_meta(page)
+        if doc_meta.get("authors") or doc_meta.get("last_modified"):
+            print(f"  author(s): {', '.join(doc_meta.get('authors', [])) or '?'}, "
+                  f"last modified: {doc_meta.get('last_modified', '?')}")
+
         print("[feishu2md] draining network traffic…")
         records = _collect_traffic(page, settle=2.0, out_dir=tmp_dir)
         print(f"  {len(records)} requests captured")
@@ -1213,7 +1251,8 @@ def convert(page, url: str, out_dir: Path, save_html: bool = False) -> Path:
             if body_lines and body_lines[0].strip() == title.strip():
                 body = "\n".join(body_lines[1:]).lstrip("\n")
 
-            md = f"# {_strip_zero_width(title)}\n\n{body}"
+            meta_line = _format_meta_line(doc_meta)
+            md = f"# {_strip_zero_width(title)}\n\n{meta_line}{body}"
             md = re.sub(r"\n{3,}", "\n\n", md)
             print(f"  {len(md):,} chars")
 
@@ -1447,7 +1486,8 @@ def convert(page, url: str, out_dir: Path, save_html: bool = False) -> Path:
         converter = _Converter(block_map, token_to_rel)
         body      = converter.convert(root_id)
 
-        md = f"# {_strip_zero_width(title)}\n\n{body}"
+        meta_line = _format_meta_line(doc_meta)
+        md = f"# {_strip_zero_width(title)}\n\n{meta_line}{body}"
         if has_more:
             missing = total_children - loaded_children
             note = (
