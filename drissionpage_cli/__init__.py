@@ -272,7 +272,6 @@ def _get_page(session_name, create=False, options=None):
                 co.set_argument(arg)
 
     page = ChromiumPage(addr_or_opts=co)
-    _apply_chrome146_fix(page)
 
     # Record session info
     sessions[session_name] = {
@@ -1342,7 +1341,7 @@ def cmd_kill_all(args):
     # Also clean up any orphaned chrome/chromium with remote debugging
     try:
         subprocess.run(
-            ["pkill", "-TERM", "-f", "chrome.*--remote-debugging-port"],
+            ["pkill", "-TERM", "-f", "[Cc]hrome.*--remote-debugging-port"],
             capture_output=True,
         )
     except Exception:
@@ -1350,7 +1349,7 @@ def cmd_kill_all(args):
     time.sleep(1)
     try:
         subprocess.run(
-            ["pkill", "-KILL", "-f", "chrome.*--remote-debugging-port"],
+            ["pkill", "-KILL", "-f", "[Cc]hrome.*--remote-debugging-port"],
             capture_output=True,
         )
     except Exception:
