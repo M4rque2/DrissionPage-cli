@@ -162,16 +162,6 @@ def _cli_profile_path(browser_path=None):
     return CLI_DIR / "profile"
 
 
-def _apply_chrome146_fix(page):
-    """No-op. Kept for call-site compatibility.
-
-    The Chrome 147+ viewport fix is now handled by the monkey-patch in
-    ``_compat.py`` which filters out ``chrome://newtab-footer/`` during
-    target selection, applied at import time.
-    """
-    pass
-
-
 def _get_page(session_name, create=False, options=None):
     """Get or create a ChromiumPage for the given session.
 
@@ -196,7 +186,6 @@ def _get_page(session_name, create=False, options=None):
             co.headless(info.get("headless", False))
             try:
                 page = ChromiumPage(addr_or_opts=co)
-                _apply_chrome146_fix(page)
                 if not create:
                     return page
                 # create=True but session is alive — close old one first
