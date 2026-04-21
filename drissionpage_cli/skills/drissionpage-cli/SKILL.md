@@ -313,30 +313,58 @@ drissionpage-cli install --skills
 * **Network listening** [references/network-listening.md](references/network-listening.md)
 * **Dual-mode (browser + requests)** [references/dual-mode.md](references/dual-mode.md)
 
-## Feishu → Markdown (`md` command)
+## Web Page → Markdown (`md` command)
+
+The `md` command converts a web page to a self-contained Markdown file with
+locally saved images. The URL is auto-detected to choose the right converter.
+Omit the URL to convert the page currently open in the browser.
 
 ```bash
-drissionpage-cli md https://<company>.feishu.cn/docx/<token> [out_dir]
-drissionpage-cli md https://<company>.feishu.cn/wiki/<token> ./output
-drissionpage-cli md https://<company>.feishu.cn/docx/<token> --save-html
+# Feishu documents
+drissionpage-cli md https://<company>.feishu.cn/docx/<token>
+drissionpage-cli md https://<company>.feishu.cn/wiki/<token> -o ./output
+
+# Xiaohongshu notes
+drissionpage-cli md https://www.xiaohongshu.com/explore/<note_id> -o ./output
+# Or convert the currently open page (useful after clicking into a note)
+drissionpage-cli md
+
+# Common options
+drissionpage-cli md <url> --save-html
 ```
 
-Converts a Feishu document to Markdown. Captures full network traffic on page
-load — the complete document block tree is embedded in Feishu's SSR HTML as
-`window.DATA.clientVars.data.block_map`. No scrolling or DOM scraping needed.
-
-Output layout:
+Output layout (both sites):
 ```
 out_dir/
   Title/
-    Title.md        ← Markdown with local references
+    Title.md        ← Markdown with local image references
     images/
-      img_001.png   ← document images and file cover thumbnails
-    files/
-      report.pdf    ← file attachments if captured in traffic
+      img_001.png
+      img_002.jpg
+      ...
 ```
 
-### Supported block types
+### Supported sites
+
+| Site | URL pattern | Converter |
+|---|---|---|
+| Feishu | `*.feishu.cn/wiki/*` or `*.feishu.cn/docx/*` | Network-capture: extracts block_map from SSR HTML |
+| Xiaohongshu | `xiaohongshu.com/explore/*` | DOM extraction: reads rendered page content |
+
+Options:
+- `url` — page URL (optional; uses current browser page if omitted)
+- `out_dir` — output directory (default: `.`)
+- `--save-html` — also save the raw HTML alongside the Markdown
+
+---
+
+### Feishu details
+
+Captures full network traffic on page load — the complete document block tree
+is embedded in Feishu's SSR HTML as `window.DATA.clientVars.data.block_map`.
+No scrolling or DOM scraping needed.
+
+#### Supported block types
 
 | Block | Feishu name | Markdown output |
 |---|---|---|
@@ -358,27 +386,54 @@ out_dir/
 | `whiteboard` | 绘图/思维导图/流程图/UML图 | `![diagram](images/whiteboard_NNN.png)` — screenshot of rendered canvas |
 | `page` | 子页面引用 | `> 📄 title` |
 
-### Inline formatting
+#### Inline formatting
 
 **bold**, *italic*, ***bold italic***, `code`, ~~strikethrough~~, [links](url) — all decoded from Quill/Etherpad attributed text.
 
-### Known limitations
+#### Known limitations
 
 | Block | Feishu name | Reason |
 |---|---|---|
-| `whiteboard` | 绘图/思维导图/流程图/UML | Screenshotted via live browser (WASM renderer). Fallback `> 🎨 [not captured]` if the element was not rendered (empty whiteboard or scroll timing). |
+| `whiteboard` | 绘图/思维导图/流程图/UML | Screenshotted via live browser (WASM renderer). Fallback if not rendered. |
 | `equation` / `formula` | 公式 | LaTeX math; not yet implemented |
 | `button` | 按钮 | Interactive UI element; no text equivalent |
 | `comment` | 评论/划线 | Annotation layer; not in block_map |
 | Old DOC format | `wikcn…` wiki URLs | Different flat-text structure; not supported |
 | Large docs (>239 blocks) | — | Feishu SSR caps initial payload; truncation warning added |
 
-### File attachments
+#### File attachments
 
 Files in traffic are saved to `files/`. Cover thumbnails (PNG previews) are
 always captured and shown as inline images. The actual file is only captured
-if the browser downloaded it (small files may be auto-fetched; large PDFs usually are not).
+if the browser downloaded it.
 
-Options:
-- `out_dir` — output directory (default: `.`)
-- `--save-html` — also save the raw SSR HTML alongside the Markdown
+---
+
+### Xiaohongshu (RedNote) details
+
+Extracts note content from the rendered DOM of a note detail page. Because
+Xiaohongshu blocks direct URL navigation (anti-bot), the typical workflow is:
+
+1. Open the search page or home feed in the browser
+2. Click on a note card — this opens the note with valid auth tokens
+3. Run `drissionpage-cli md` (no URL needed — uses the current page)
+
+#### Extracted fields
+
+| Field | Markdown output |
+|---|---|
+| Title | `# Title` heading |
+| Author, location, date | `> Author: … \| Location: … \| Date: …` blockquote |
+| Likes, collects, comments | appended to metadata blockquote |
+| Description / body text | paragraph text with proper line breaks |
+| Images | `![image](images/img_NNN.ext)` — downloaded locally |
+| Hashtags | `Tags: #tag1 #tag2 …` at the bottom |
+
+#### Known limitations
+
+- **Direct navigation blocked**: XHS requires `xsec_token` in the URL, which
+  is only present when clicking through from search or feed. Always click into
+  a note rather than pasting a bare `/explore/<id>` URL.
+- **Video content**: video notes include a `video_id` reference but the video
+  file is not downloaded.
+- **Comments**: only the note body is extracted; comments are not included.

@@ -1481,36 +1481,50 @@ def cmd_state_load(args):
 # --- Install skills ---
 
 
+def _detect_site(url: str):
+    """Detect which converter to use for a URL.  Returns 'feishu', 'xhs', or None."""
+    parsed = urlparse(url.split("?")[0])
+    if (parsed.netloc.endswith(".feishu.cn")
+            and ("/wiki/" in parsed.path or "/docx/" in parsed.path)):
+        return "feishu"
+    if ("xiaohongshu.com" in parsed.netloc
+            and ("/explore/" in parsed.path or "/search_result/" in parsed.path)):
+        return "xhs"
+    return None
+
+
 def cmd_md(args):
-    """Convert a Feishu document to Markdown with locally saved images."""
-    from drissionpage_cli._feishu import convert
-
-    url = args.url
-    parsed = urlparse(url)
-    is_feishu = (
-        parsed.netloc.endswith(".feishu.cn")
-        and ("/wiki/" in parsed.path or "/docx/" in parsed.path)
-    )
-    if not is_feishu:
-        print(f"Error: '{url}' is not a supported Feishu document.", file=sys.stderr)
-        print("Supported: https://<company>.feishu.cn/wiki/<id>  or  /docx/<id>", file=sys.stderr)
-        sys.exit(1)
-
+    """Convert a web page to Markdown with locally saved images."""
+    url = getattr(args, "url", None)
     session = _get_session_name(args)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         page = _get_page(session)
     except RuntimeError:
         page = _get_page(session, create=True, options={"headless": False})
 
-    convert(
-        page,
-        url=url,
-        out_dir=out_dir,
-        save_html=getattr(args, "save_html", False),
-    )
+    if not url:
+        url = page.url
+
+    site = _detect_site(url)
+    if not site:
+        print(f"Error: '{url}' is not a supported page.", file=sys.stderr)
+        print("Supported sites:", file=sys.stderr)
+        print("  Feishu:       https://<company>.feishu.cn/wiki/<id>  or  /docx/<id>", file=sys.stderr)
+        print("  Xiaohongshu:  https://www.xiaohongshu.com/explore/<note_id>", file=sys.stderr)
+        print("Or omit the URL to convert the currently open page.", file=sys.stderr)
+        sys.exit(1)
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_html = getattr(args, "save_html", False)
+
+    if site == "feishu":
+        from drissionpage_cli._feishu import convert
+    else:
+        from drissionpage_cli._xiaohongshu import convert
+
+    convert(page, url=url, out_dir=out_dir, save_html=save_html)
 
 
 def cmd_install(args):
@@ -1850,10 +1864,10 @@ def build_parser():
     p.add_argument("--skills", action="store_true", help="Install Claude Code skills")
     p.set_defaults(func=cmd_install)
 
-    # md - Convert Feishu document to Markdown with locally saved images
-    p = subparsers.add_parser("md", help="Convert a Feishu document to Markdown")
-    p.add_argument("url", help="Feishu document URL (*.feishu.cn/wiki/* or /docx/*)")
-    p.add_argument("out_dir", nargs="?", default=".", help="Output directory (default: .)")
+    # md - Convert a web page to Markdown (Feishu, Xiaohongshu)
+    p = subparsers.add_parser("md", help="Convert a web page to Markdown (Feishu, Xiaohongshu)")
+    p.add_argument("url", nargs="?", help="Page URL (omit to use the currently open page)")
+    p.add_argument("-o", "--out-dir", default=".", help="Output directory (default: .)")
     p.add_argument("--save-html", action="store_true", help="Also save the raw SSR HTML")
     p.set_defaults(func=cmd_md)
 
