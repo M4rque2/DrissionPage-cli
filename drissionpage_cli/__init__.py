@@ -7,6 +7,7 @@ Designed for token-efficient browser automation by coding agents.
 """
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -520,6 +521,71 @@ def _find_element(page, ref):
 
 
 # ---------------------------------------------------------------------------
+# Capture decorator
+# ---------------------------------------------------------------------------
+
+_MEDIA_EXTS = {
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".bmp", ".ico",
+    ".mp3", ".mp4", ".ogg", ".ogv", ".wav", ".webm", ".aac", ".flac", ".avi", ".mov",
+}
+
+
+def _save_capture(page):
+    """Drain the network listener and save traffic + HTML snapshot to disk."""
+    timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
+    capture_dir = Path.cwd() / f"capture-{timestamp}"
+    capture_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        (capture_dir / "snapshot.html").write_text(page.html, encoding="utf-8")
+    except Exception as e:
+        print(f"[warn] could not save snapshot HTML: {e}", file=sys.stderr)
+
+    records = _collect_traffic(page, out_dir=capture_dir)
+
+    try:
+        (capture_dir / "traffic.json").write_text(
+            json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[warn] could not save traffic manifest: {e}", file=sys.stderr)
+
+    n_media = sum(
+        1 for r in records
+        if r.get("file") and Path(r["file"]).suffix.lower() in _MEDIA_EXTS
+    )
+    print(f"[capture] folder   → {capture_dir}")
+    print(f"[capture] snapshot → snapshot.html")
+    print(f"[capture] traffic  → traffic.json  ({len(records)} requests)")
+    if n_media:
+        print(f"[capture] media    → {n_media} files (images/audio/video)")
+
+
+def _with_capture(fn):
+    """Decorator: start network listener before, save capture after.
+
+    Applied to commands that operate on an *existing* page (not ``open``).
+    When ``args.capture`` is truthy the decorator brackets the handler
+    with ``page.listen.start()`` / ``_save_capture(page)``.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(args):
+        capture = getattr(args, "capture", False)
+        if capture:
+            session = _get_session_name(args)
+            page = _get_page(session)
+            page.listen.start()
+
+        fn(args)
+
+        if capture:
+            _save_capture(page)
+
+    return wrapper
+
+
+# ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
 
@@ -565,69 +631,31 @@ def cmd_open(args):
     url = getattr(args, "url", None)
     capture = getattr(args, "capture", False)
 
-    _MEDIA_EXTS = {
-        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".bmp", ".ico",
-        ".mp3", ".mp4", ".ogg", ".ogv", ".wav", ".webm", ".aac", ".flac", ".avi", ".mov",
-    }
-
     if url:
         if capture:
-            # Start listening BEFORE navigation so no packet is missed
             page.listen.start()
-
         page.get(url)
-
         if capture:
-            timestamp = time.strftime("%Y-%m-%dT%H-%M-%S")
-            capture_dir = Path.cwd() / f"capture-{timestamp}"
-            capture_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save page snapshot HTML
-            html_file = capture_dir / "snapshot.html"
-            try:
-                html_file.write_text(page.html, encoding="utf-8")
-            except Exception as e:
-                print(f"[warn] could not save snapshot HTML: {e}", file=sys.stderr)
-
-            # Drain listener; each response body is written as its own file
-            records = _collect_traffic(page, out_dir=capture_dir)
-
-            # Save traffic manifest
-            traffic_file = capture_dir / "traffic.json"
-            try:
-                traffic_file.write_text(
-                    json.dumps(records, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-            except Exception as e:
-                print(f"[warn] could not save traffic manifest: {e}", file=sys.stderr)
-
-            n_media = sum(
-                1 for r in records
-                if r.get("file") and Path(r["file"]).suffix.lower() in _MEDIA_EXTS
-            )
-            print(f"[capture] folder   → {capture_dir}")
-            print(f"[capture] snapshot → snapshot.html")
-            print(f"[capture] traffic  → traffic.json  ({len(records)} requests)")
-            if n_media:
-                print(f"[capture] media    → {n_media} files (images/audio/video)")
-    else:
-        if capture:
-            print("[warn] --capture requires a URL to be useful; listener not started.", file=sys.stderr)
+            _save_capture(page)
+    elif capture:
+        print("[warn] --capture requires a URL to be useful; listener not started.",
+              file=sys.stderr)
 
     _inject_console_capture(page)
     print(_format_snapshot(page, save=not capture))
 
 
+@_with_capture
 def cmd_goto(args):
     """Navigate to a URL."""
     session = _get_session_name(args)
     page = _get_page(session)
     page.get(args.url)
     _inject_console_capture(page)
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_click(args):
     """Click an element."""
     session = _get_session_name(args)
@@ -637,9 +665,10 @@ def cmd_click(args):
         print(f"Error: element not found: {args.ref}", file=sys.stderr)
         sys.exit(1)
     ele.click()
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_dblclick(args):
     """Double-click an element."""
     session = _get_session_name(args)
@@ -649,9 +678,10 @@ def cmd_dblclick(args):
         print(f"Error: element not found: {args.ref}", file=sys.stderr)
         sys.exit(1)
     ele.click(times=2)
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_right_click(args):
     """Right-click an element."""
     session = _get_session_name(args)
@@ -661,9 +691,10 @@ def cmd_right_click(args):
         print(f"Error: element not found: {args.ref}", file=sys.stderr)
         sys.exit(1)
     ele.click(button="right")
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_type(args):
     """Type text into the focused or specified element."""
     session = _get_session_name(args)
@@ -675,11 +706,11 @@ def cmd_type(args):
             sys.exit(1)
         ele.input(args.text)
     else:
-        # Type into active element
         page.actions.type(args.text)
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_fill(args):
     """Clear and fill text into an element."""
     session = _get_session_name(args)
@@ -692,9 +723,10 @@ def cmd_fill(args):
     ele.input(args.text)
     if getattr(args, "submit", False):
         ele.input("\n")
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_hover(args):
     """Hover over an element."""
     session = _get_session_name(args)
@@ -704,9 +736,10 @@ def cmd_hover(args):
         print(f"Error: element not found: {args.ref}", file=sys.stderr)
         sys.exit(1)
     ele.hover()
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_drag(args):
     """Drag one element to another."""
     session = _get_session_name(args)
@@ -717,9 +750,10 @@ def cmd_drag(args):
         print("Error: source or destination element not found", file=sys.stderr)
         sys.exit(1)
     src.drag_to(dst)
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_select(args):
     """Select an option in a dropdown."""
     session = _get_session_name(args)
@@ -729,9 +763,10 @@ def cmd_select(args):
         print(f"Error: element not found: {args.ref}", file=sys.stderr)
         sys.exit(1)
     ele.select.by_text(args.value)
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_check(args):
     """Check a checkbox."""
     session = _get_session_name(args)
@@ -742,9 +777,10 @@ def cmd_check(args):
         sys.exit(1)
     if not ele.states.is_checked:
         ele.click()
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
+@_with_capture
 def cmd_uncheck(args):
     """Uncheck a checkbox."""
     session = _get_session_name(args)
@@ -755,7 +791,7 @@ def cmd_uncheck(args):
         sys.exit(1)
     if ele.states.is_checked:
         ele.click()
-    print(_format_snapshot(page))
+    print(_format_snapshot(page, save=not getattr(args, "capture", False)))
 
 
 def cmd_upload(args):
@@ -1675,27 +1711,37 @@ def build_parser():
     # goto
     p = subparsers.add_parser("goto", help="Navigate to a URL")
     p.add_argument("url", help="URL to navigate to")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_goto)
 
     # click
     p = subparsers.add_parser("click", help="Click an element")
     p.add_argument("ref", help="Element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_click)
 
     # dblclick
     p = subparsers.add_parser("dblclick", help="Double-click an element")
     p.add_argument("ref", help="Element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_dblclick)
 
     # right-click
     p = subparsers.add_parser("right-click", help="Right-click an element")
     p.add_argument("ref", help="Element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_right_click)
 
     # type
     p = subparsers.add_parser("type", help="Type text")
     p.add_argument("text", help="Text to type")
     p.add_argument("ref", nargs="?", help="Element locator (optional)")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_type)
 
     # fill
@@ -1703,32 +1749,44 @@ def build_parser():
     p.add_argument("ref", help="Element locator")
     p.add_argument("text", help="Text to fill")
     p.add_argument("--submit", action="store_true", help="Press Enter after filling")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_fill)
 
     # hover
     p = subparsers.add_parser("hover", help="Hover over element")
     p.add_argument("ref", help="Element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_hover)
 
     # drag
     p = subparsers.add_parser("drag", help="Drag element to another")
     p.add_argument("start_ref", help="Source element locator")
     p.add_argument("end_ref", help="Target element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_drag)
 
     # select
     p = subparsers.add_parser("select", help="Select dropdown option")
     p.add_argument("ref", help="Select element locator")
     p.add_argument("value", help="Option text to select")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_select)
 
     # check / uncheck
     p = subparsers.add_parser("check", help="Check a checkbox")
     p.add_argument("ref", help="Checkbox element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_check)
 
     p = subparsers.add_parser("uncheck", help="Uncheck a checkbox")
     p.add_argument("ref", help="Checkbox element locator")
+    p.add_argument("--capture", action="store_true",
+                   help="Capture network traffic triggered by this action")
     p.set_defaults(func=cmd_uncheck)
 
     # upload
