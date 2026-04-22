@@ -146,17 +146,28 @@ For a fully isolated throwaway session (no persistent state):
 drissionpage-cli open --sandbox
 ```
 
-### Capture mode (full page archive)
+### Capture mode (network traffic recording)
+
+Append `--capture` to any interaction command to record all network traffic triggered by that action:
 
 ```bash
+# Capture during navigation
 drissionpage-cli open https://example.com --capture
+drissionpage-cli goto https://example.com --capture
+
+# Capture traffic triggered by a click (e.g. form submit, XHR, SPA navigation)
+drissionpage-cli click "#submit" --capture
+
+# Also supported on: dblclick, right-click, type, fill, hover, drag, select, check, uncheck
+drissionpage-cli fill "css:input[name=q]" "search term" --submit --capture
+drissionpage-cli hover "@id=lazy-load-trigger" --capture
 ```
 
 Creates a timestamped folder `capture-<ts>/` in the current directory containing:
 
 | File | Contents |
 |------|----------|
-| `snapshot.html` | Page HTML at load-complete time |
+| `snapshot.html` | Page HTML after the action completes |
 | `traffic.json` | Manifest of all requests (url, method, status, content_type, file) |
 | `0001_*.{ext}` … | Every response body saved as an individual file |
 
@@ -187,6 +198,8 @@ Captured file types include: HTML, CSS, JS, JSON, images (jpg, png, webp, gif, s
 | `select <ref> <value>` | Select dropdown option |
 | `check <ref>` / `uncheck <ref>` | Check / uncheck a checkbox |
 | `upload <ref> <file>` | Upload a file |
+
+All commands above (except `upload`) accept `--capture` to record network traffic triggered by the action.
 | `snapshot [ref] [--filename=f]` | Capture page or element snapshot |
 | `eval <expr> [ref]` | Evaluate JavaScript on page or element |
 | `run-code <code> [--filename=f]` | Run arbitrary DrissionPage Python code |

@@ -185,9 +185,6 @@ drissionpage-cli open --profile=/path/to/profile
 # Use a specific CDP port (default: 9222)
 drissionpage-cli open --port=9333
 
-# Capture mode: navigate + save full page archive to a folder in CWD
-drissionpage-cli open https://example.com --capture
-
 # Close the browser
 drissionpage-cli close
 
@@ -195,13 +192,30 @@ drissionpage-cli close
 drissionpage-cli delete-data --reset-profile
 ```
 
-### --capture
+### --capture (network traffic recording)
+
+Append `--capture` to any interaction command to record all network traffic triggered by that action.
+
+Supported commands: `open`, `goto`, `click`, `dblclick`, `right-click`, `type`, `fill`, `hover`, `drag`, `select`, `check`, `uncheck`.
+
+```bash
+# Capture during navigation
+drissionpage-cli open https://example.com --capture
+drissionpage-cli goto https://example.com --capture
+
+# Capture traffic triggered by a click (e.g. form submit, XHR, SPA navigation)
+drissionpage-cli click "#submit" --capture
+
+# Combine with other flags
+drissionpage-cli fill "css:input[name=q]" "search term" --submit --capture
+drissionpage-cli hover "@id=lazy-load-trigger" --capture
+```
 
 Creates a timestamped folder `capture-<ts>/` in the current working directory:
 
 ```
 capture-2026-04-14T16-06-30/
-  snapshot.html        ← page HTML at load-complete time
+  snapshot.html        ← page HTML after the action completes
   traffic.json         ← manifest: [{url, method, status, content_type, file}, ...]
   0001_index.html      ← each network response body as its own file
   0002_styles.css
