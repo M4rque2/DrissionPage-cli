@@ -295,6 +295,37 @@ Or set a default session via environment variable:
 DRISSIONPAGE_CLI_SESSION=myproject drissionpage-cli open https://example.com
 ```
 
+## Browser Connection Lifecycle
+
+### How `open` connects
+
+`open` uses a lazy, connection-first strategy — it never kills a browser it didn't launch:
+
+1. **Reconnect to previous session** — if a session record exists in `~/.drissionpage-cli/sessions.json` and the browser is still alive, `open` reconnects to it. It does not kill and relaunch. Calling `open <url>` on a running session simply navigates to the new URL.
+2. **Launch a new browser** — if no session record exists and port 9222 is free, `open` starts a fresh Chrome instance with the CLI-managed profile.
+3. **Adopt an existing browser** — if port 9222 is already occupied (e.g. by an orphaned Chrome from a crashed session, or a manually launched `chrome --remote-debugging-port=9222`), `open` attempts a CDP connection. If it succeeds, the browser is adopted as the current session — no restart needed.
+4. **Report an error** — if the port is occupied by something that isn't a controllable Chrome (e.g. another server), `open` reports a clear error with options (`--port=<other>`, `kill-all`). It never auto-kills the process.
+
+### How `close` works
+
+`close` only shuts down browsers that have a session record. If you run `close` and there is no matching session in the registry, it prints `"Session 'X' not found. Nothing to close."` — it does not probe the port or kill unknown processes. To forcefully clean up all Chrome instances (including orphans), use `kill-all`.
+
+### Two processes controlling the same Chrome
+
+Chrome DevTools Protocol (CDP) allows multiple clients to connect simultaneously. If two dp-cli processes (or any two CDP clients) attach to the same Chrome on port 9222:
+
+- **Both send commands independently.** Chrome executes them in arrival order with no coordination — navigation, clicks, and JS evaluation from one client can interleave unpredictably with the other.
+- **Both receive all events.** DOM changes, navigations, and network events triggered by one client appear to the other as spontaneous activity.
+- **`close` from either side kills Chrome for both.** CDP's `Browser.close` terminates the entire browser process; the other client's WebSocket disconnects immediately.
+- **Neither client can detect the other.** CDP has no API to list connected clients or receive "another client connected" events.
+
+**Recommendation:** avoid sharing a single Chrome instance between concurrent automations. Use named sessions on different ports instead:
+
+```bash
+dp-cli -s=task1 open --port=9222 https://site-a.com
+dp-cli -s=task2 open --port=9223 https://site-b.com
+```
+
 ## Running Custom Code
 
 Execute arbitrary DrissionPage Python code with `run-code`. The `page` variable is the active `ChromiumPage` instance. Set `result` to output a return value.

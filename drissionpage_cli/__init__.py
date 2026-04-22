@@ -121,12 +121,44 @@ def _kill_session(sessions, session_name):
     pid = info.get("pid")
     if pid:
         try:
-            os.kill(pid, signal.SIGTERM)
+            if sys.platform == "win32":
+                import subprocess
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                )
+            else:
+                os.kill(pid, signal.SIGTERM)
             time.sleep(0.5)
         except (ProcessLookupError, PermissionError, OSError):
             pass
     del sessions[session_name]
     _save_sessions(sessions)
+
+
+def _try_connect_existing(port, is_headless=False):
+    """Try to connect to an existing Chrome on the given port via CDP.
+
+    Returns a ChromiumPage if successful, or None if the port is not a
+    controllable Chrome browser.  Never kills anything.
+    """
+    from DrissionPage import ChromiumOptions, ChromiumPage
+    from DrissionPage._functions.settings import Settings
+    from DrissionPage.errors import BrowserConnectError
+
+    co = ChromiumOptions()
+    co.set_address(f"127.0.0.1:{port}")
+    co.existing_only(True)
+    co.headless(is_headless)
+
+    saved = Settings.browser_connect_timeout
+    Settings.browser_connect_timeout = 3
+    try:
+        return ChromiumPage(addr_or_opts=co)
+    except (BrowserConnectError, Exception):
+        return None
+    finally:
+        Settings.browser_connect_timeout = saved
 
 
 def _snap_name(path):
@@ -180,21 +212,13 @@ def _get_page(session_name, create=False, options=None):
         address = info["address"]
         ip, port_str = address.split(":")
         if port_is_using(ip, port_str):
-            # Browser is alive — connect to it.
+            # Browser is alive — reconnect to it.
             co = ChromiumOptions()
             co.set_address(address)
             co.headless(info.get("headless", False))
             try:
                 page = ChromiumPage(addr_or_opts=co)
-                if not create:
-                    return page
-                # create=True but session is alive — close old one first
-                try:
-                    page.quit()
-                except Exception:
-                    pass
-                _kill_session(sessions, session_name)
-                sessions = _load_sessions()
+                return page
             except Exception:
                 _kill_session(sessions, session_name)
                 sessions = _load_sessions()
@@ -242,14 +266,26 @@ def _get_page(session_name, create=False, options=None):
         co.auto_port()
     else:
         # Persistent profile: fixed port + CLI-managed profile.
-        # Works in both headed and headless mode — Chrome 136+ only blocks remote debugging
-        # on the OS-default profile path, not on custom paths.
         port = explicit_port or DEFAULT_PORT
         if port_is_using("127.0.0.1", str(port)):
+            # Port occupied, no session record — try to connect via CDP.
+            page = _try_connect_existing(port, is_headless)
+            if page is not None:
+                sessions[session_name] = {
+                    "address": page.address,
+                    "pid": page.process_id,
+                    "started": time.time(),
+                    "headless": is_headless,
+                    "sandbox": False,
+                }
+                _save_sessions(sessions)
+                return page
             raise RuntimeError(
-                f"Port {port} is already in use by another program.\n"
-                f"Stop the other program, or specify a different port with --port=<port>.\n"
-                f"To force-kill all CLI-managed browsers: drissionpage-cli kill-all"
+                f"Port {port} is already in use but is not a controllable browser.\n"
+                f"Options:\n"
+                f"  - Stop whatever is using port {port}\n"
+                f"  - Use a different port: drissionpage-cli open --port=<other>\n"
+                f"  - Force-kill all CLI browsers: drissionpage-cli kill-all"
             )
         co.set_local_port(port)
 
@@ -1257,7 +1293,7 @@ def cmd_close(args):
     sessions = _load_sessions()
 
     if session not in sessions:
-        print(f"Session '{session}' not found")
+        print(f"Session '{session}' not found. Nothing to close.")
         return
 
     try:
@@ -1320,50 +1356,97 @@ def cmd_kill_all(args):
         if alive:
             time.sleep(0.1)
 
-    # Phase 2: SIGTERM any that are still alive
-    for pid in alive:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-    time.sleep(1)
-
-    # Phase 3: SIGKILL any that still didn't exit
-    for pid in alive:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+    # Phase 2: forcefully terminate any that are still alive
+    if sys.platform == "win32":
+        for pid in alive:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True,
+                )
+            except Exception:
+                pass
+    else:
+        for pid in alive:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(1)
+        # Phase 3: SIGKILL any that still didn't exit
+        alive = [p for p in alive if _pid_alive(p)]
+        for pid in alive:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
     _save_sessions({})
 
     # Also clean up any orphaned chrome/chromium with remote debugging
-    try:
-        subprocess.run(
-            ["pkill", "-TERM", "-f", "[Cc]hrome.*--remote-debugging-port"],
-            capture_output=True,
-        )
-    except Exception:
-        pass
-    time.sleep(1)
-    try:
-        subprocess.run(
-            ["pkill", "-KILL", "-f", "[Cc]hrome.*--remote-debugging-port"],
-            capture_output=True,
-        )
-    except Exception:
-        pass
+    _kill_orphaned_browsers()
     print("All browser processes killed")
 
 
 def _pid_alive(pid):
     """Return True if the process with the given PID is still running."""
+    if sys.platform == "win32":
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True,
+            )
+            return str(pid) in result.stdout
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
     except (ProcessLookupError, PermissionError):
         return False
+
+
+def _kill_orphaned_browsers():
+    """Kill orphaned Chrome/Chromium processes with remote debugging ports.
+
+    Works on macOS, Linux, and Windows.
+    """
+    import subprocess
+
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["wmic", "process", "where",
+                 "commandline like '%--remote-debugging-port%' and (name like '%chrome%' or name like '%chromium%')",
+                 "get", "processid"],
+                capture_output=True, text=True,
+            )
+            for line in result.stdout.strip().splitlines()[1:]:
+                pid = line.strip()
+                if pid.isdigit():
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", pid],
+                        capture_output=True,
+                    )
+        except Exception:
+            pass
+    else:
+        try:
+            subprocess.run(
+                ["pkill", "-TERM", "-f", "[Cc]hrome.*--remote-debugging-port"],
+                capture_output=True,
+            )
+        except Exception:
+            pass
+        time.sleep(1)
+        try:
+            subprocess.run(
+                ["pkill", "-KILL", "-f", "[Cc]hrome.*--remote-debugging-port"],
+                capture_output=True,
+            )
+        except Exception:
+            pass
 
 
 def cmd_delete_data(args):
