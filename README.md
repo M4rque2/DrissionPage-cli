@@ -32,6 +32,19 @@ Modern coding agents (Claude Code, GitHub Copilot, etc.) increasingly favour CLI
 
 - Python 3.8+
 - Chrome / Chromium browser installed
+- DrissionPage 4.0+ (installed automatically)
+
+### Chrome 147+ users: DrissionPage 5.0.0b0 or newer
+
+Chrome 147 exposes `chrome://newtab-footer/` as a separate CDP target, which older DrissionPage releases can pick as the default tab — pages then render squished into a ~100px strip at the bottom of the window. The fix landed upstream in [DrissionPage PR #665](https://github.com/g1879/DrissionPage/pull/665) and ships in **5.0.0b0 and newer**; the 4.1.x line does not carry it.
+
+drissionpage-cli checks both versions when it connects and warns once per run **only if** your Chrome is 147+ *and* your DrissionPage is too old. On Chrome 146 or older the bug cannot occur, so there is no warning and nothing to do. If you do see the warning:
+
+```bash
+pip install --upgrade --pre "DrissionPage>=5.0.0b0"
+```
+
+`DRISSIONPAGE_CLI_NO_VERSION_WARN=1` silences it. See [docs/chrome146_compatibility_fix.md](docs/chrome146_compatibility_fix.md) for the full investigation.
 
 ## Installation
 

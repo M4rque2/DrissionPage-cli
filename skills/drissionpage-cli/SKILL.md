@@ -317,6 +317,22 @@ Or install skills for Claude Code:
 drissionpage-cli install --skills
 ```
 
+### DrissionPage version warning
+
+If a command prints:
+
+```
+[warn] Chrome <N> exposes the chrome://newtab-footer target, and DrissionPage <x.y.z> is missing the fix for it ...
+```
+
+this Chrome is 147 or newer and the installed DrissionPage predates [upstream PR #665](https://github.com/g1879/DrissionPage/pull/665). Pages may render squished into a ~100px strip at the bottom of the window, so screenshots and viewport-dependent interactions will be wrong. Fix it by upgrading:
+
+```bash
+pip install --upgrade --pre "DrissionPage>=5.0.0b0"
+```
+
+The warning only appears on Chrome 147+ with an old DrissionPage — on Chrome 146 or older the bug cannot occur and nothing is printed. Export `DRISSIONPAGE_CLI_NO_VERSION_WARN=1` to silence it.
+
 ## Specific tasks
 
 * **Element locator strategies** [references/element-locators.md](references/element-locators.md)

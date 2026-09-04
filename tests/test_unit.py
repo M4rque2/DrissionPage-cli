@@ -1182,3 +1182,149 @@ class TestCommandHandlersMocked:
         assert "Sessions (2)" in captured.out
         assert "default" in captured.out
         assert "auth" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# DrissionPage version compatibility check
+# ---------------------------------------------------------------------------
+
+
+class TestDrissionPageVersionCheck:
+    @pytest.fixture(autouse=True)
+    def _reset_warned(self):
+        from drissionpage_cli import _compat
+
+        _compat._WARNED = False
+        yield
+        _compat._WARNED = False
+
+    @pytest.mark.parametrize(
+        "older,newer",
+        [
+            ("4.1.1.4", "5.0.0b0"),
+            ("4.0.4.23", "4.1.1.4"),
+            ("5.0.0b0", "5.0.0b1"),
+            ("5.0.0b1", "5.0.0rc1"),
+            ("5.0.0rc1", "5.0.0"),
+            ("5.0.0", "5.1"),
+        ],
+    )
+    def test_parse_version_ordering(self, older, newer):
+        from drissionpage_cli._compat import _parse_version
+
+        assert _parse_version(older) < _parse_version(newer)
+
+    def test_parse_version_pads_release(self):
+        from drissionpage_cli._compat import _parse_version
+
+        assert _parse_version("4.1") == _parse_version("4.1.0.0")
+
+    def test_parse_version_unparsable(self):
+        from drissionpage_cli._compat import _parse_version
+
+        assert _parse_version("not-a-version") is None
+
+    @staticmethod
+    def _page(product):
+        """A page stub whose browser reports *product* (e.g. 'Chrome/147.0.1.0')."""
+        page = MagicMock()
+        page.browser_version = product
+        return page
+
+    def test_chrome_major_version_from_product_string(self):
+        from drissionpage_cli._compat import chrome_major_version
+
+        assert chrome_major_version(self._page("Chrome/147.0.7300.0")) == 147
+        assert chrome_major_version(self._page("Chrome/146.0.7200.15")) == 146
+        assert chrome_major_version(self._page("HeadlessChrome/147.0.1.2")) == 147
+
+    def test_chrome_major_version_falls_back_to_browser_attr(self):
+        """DrissionPage 5.x may not expose page.browser_version."""
+        from drissionpage_cli._compat import chrome_major_version
+
+        class Browser:
+            version = "Chrome/148.0.0.0"
+
+        class Page:  # no browser_version property at all
+            browser = Browser()
+
+        assert chrome_major_version(Page()) == 148
+
+    def test_chrome_major_version_unknown(self):
+        from drissionpage_cli._compat import chrome_major_version
+
+        assert chrome_major_version(self._page("")) is None
+        assert chrome_major_version(self._page("nonsense")) is None
+        # A bare MagicMock (no version configured) must not raise.
+        assert chrome_major_version(MagicMock()) is None
+
+    def test_warns_on_old_dp_with_affected_chrome(self, capsys):
+        from drissionpage_cli import _compat
+
+        with patch.object(_compat, "installed_version", return_value="4.1.1.4"), \
+             patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DRISSIONPAGE_CLI_NO_VERSION_WARN", None)
+            _compat.check_drissionpage_version(self._page("Chrome/147.0.7300.0"))
+
+        err = capsys.readouterr().err
+        assert "4.1.1.4" in err
+        assert "147" in err
+        assert _compat.MIN_VERSION in err
+
+    def test_silent_on_old_dp_with_unaffected_chrome(self, capsys):
+        """Chrome 146 and older cannot hit the bug — no warning even on old DP."""
+        from drissionpage_cli import _compat
+
+        with patch.object(_compat, "installed_version", return_value="4.1.1.4"):
+            _compat.check_drissionpage_version(self._page("Chrome/146.0.7200.15"))
+
+        assert capsys.readouterr().err == ""
+
+    def test_silent_when_chrome_version_unknown(self, capsys):
+        from drissionpage_cli import _compat
+
+        with patch.object(_compat, "installed_version", return_value="4.1.1.4"):
+            _compat.check_drissionpage_version(self._page("nonsense"))
+
+        assert capsys.readouterr().err == ""
+
+    def test_silent_on_new_enough_version(self, capsys):
+        from drissionpage_cli import _compat
+
+        with patch.object(_compat, "installed_version", return_value=_compat.MIN_VERSION):
+            _compat.check_drissionpage_version(self._page("Chrome/147.0.7300.0"))
+
+        assert capsys.readouterr().err == ""
+
+    def test_silent_when_version_unknown(self, capsys):
+        from drissionpage_cli import _compat
+
+        with patch.object(_compat, "installed_version", return_value=None):
+            _compat.check_drissionpage_version(self._page("Chrome/147.0.7300.0"))
+
+        assert capsys.readouterr().err == ""
+
+    def test_warns_only_once(self, capsys):
+        from drissionpage_cli import _compat
+
+        page = self._page("Chrome/147.0.7300.0")
+        with patch.object(_compat, "installed_version", return_value="4.1.1.4"):
+            _compat.check_drissionpage_version(page)
+            _compat.check_drissionpage_version(page)
+
+        assert capsys.readouterr().err.count("[warn]") == 1
+
+    def test_env_var_silences_warning(self, capsys):
+        from drissionpage_cli import _compat
+
+        with patch.object(_compat, "installed_version", return_value="4.1.1.4"), \
+             patch.dict(os.environ, {"DRISSIONPAGE_CLI_NO_VERSION_WARN": "1"}):
+            _compat.check_drissionpage_version(self._page("Chrome/147.0.7300.0"))
+
+        assert capsys.readouterr().err == ""
+
+    def test_no_patching_of_drissionpage(self):
+        """The old monkey-patch is gone; _compat exposes only the check."""
+        from drissionpage_cli import _compat
+
+        assert not hasattr(_compat, "apply_patches")

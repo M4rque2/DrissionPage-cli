@@ -25,9 +25,9 @@ try:
 except _PackageNotFoundError:
     __version__ = "unknown"
 
-# Apply runtime patches for Chrome compatibility before any DrissionPage usage.
-from drissionpage_cli._compat import apply_patches as _apply_patches
-_apply_patches()
+# Chrome compatibility fixes live upstream in DrissionPage; we only warn when
+# the installed version is too old (see drissionpage_cli/_compat.py).
+from drissionpage_cli._compat import check_drissionpage_version as _check_dp_version
 
 # Session storage directory — home-based so profile and state persist across
 # different working directories.
@@ -203,6 +203,14 @@ def _get_page(session_name, create=False, options=None):
 
     Pass options={"sandbox": True} for an isolated one-shot session.
     """
+    page = _connect_page(session_name, create=create, options=options)
+    # Needs a live browser: the warning depends on Chrome's version.
+    _check_dp_version(page)
+    return page
+
+
+def _connect_page(session_name, create=False, options=None):
+    """Connect to or launch the browser for *session_name*. See _get_page()."""
     from DrissionPage import ChromiumPage, ChromiumOptions
     from DrissionPage._functions.tools import port_is_using
 
